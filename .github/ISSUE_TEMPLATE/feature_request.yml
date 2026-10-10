@@ -1,0 +1,26 @@
+name: Feature Request
+description: Suggest a new feature or improvement for go-rotini/mcp
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: What are you trying to do? What's the problem?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API / Behavior
+      description: |
+        A sketch of what you'd like to write: an option, a command-line flag,
+        a tool definition and the result you expect.
+      render: go
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What workarounds did you try? Why don't they suffice?

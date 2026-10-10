@@ -1,0 +1,87 @@
+{
+  "tools": [
+    {
+      "name": "fake_echo",
+      "title": "fake echo",
+      "description": "print the command line",
+      "annotations": {"readOnlyHint": true},
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "words": {"type": "array", "items": {"type": "string"}},
+          "tag": {"type": "array", "items": {"type": "string"}},
+          "n": {"type": "integer", "minimum": 0},
+          "on": {"type": "boolean"},
+          "label": {"type": "object", "additionalProperties": {"type": "string"}},
+          "note": {"type": "string"},
+          "stdin": {"type": "string"}
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {"argv": {"type": "array", "items": {"type": "string"}}, "stdin": {"type": "string"}, "env": {"type": "string"}},
+        "required": ["argv"]
+      },
+      "_meta": {
+        "dev.rotini/invoke": {
+          "path": ["echo"],
+          "arguments": [{"name": "words", "kind": "list", "variadic": true}],
+          "flags": {
+            "tag": {"flag": "--tag", "kind": "list", "type": "[]string"},
+            "n": {"flag": "-n", "kind": "count", "type": "count"},
+            "on": {"flag": "--on", "kind": "scalar", "type": "bool", "negated": "--no-on"},
+            "label": {"flag": "--label", "kind": "map", "type": "map[string]string"},
+            "note": {"flag": "--note", "kind": "scalar", "type": "string", "from": ["value", "file"]}
+          },
+          "fixed": ["--json"],
+          "stdin": {"param": "stdin", "format": "text"}
+        }
+      }
+    },
+    {
+      "name": "fake_stream",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "outputSchema": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}},
+      "_meta": {"dev.rotini/invoke": {"path": ["stream"], "stream": true}}
+    },
+    {
+      "name": "fake_array",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "outputSchema": {"type": "array", "items": {"type": "integer"}},
+      "_meta": {"dev.rotini/invoke": {"path": ["array"]}}
+    },
+    {
+      "name": "fake_fail",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "_meta": {"dev.rotini/invoke": {"path": ["fail"]}}
+    },
+    {
+      "name": "fake_sleep",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "_meta": {"dev.rotini/invoke": {"path": ["sleep"]}}
+    },
+    {
+      "name": "fake_flood",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "_meta": {"dev.rotini/invoke": {"path": ["flood"]}}
+    },
+    {
+      "name": "fake_badout",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "outputSchema": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+      "_meta": {"dev.rotini/invoke": {"path": ["badout"]}}
+    },
+    {
+      "name": "fake_plain",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "_meta": {"dev.rotini/invoke": {"path": ["plain"]}}
+    },
+    {
+      "name": "fake_secret",
+      "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"key": {"type": "string"}}},
+      "_meta": {"dev.rotini/invoke": {"path": ["echo"], "flags": {"key": {"flag": "--key", "kind": "scalar", "type": "string", "secret": true}}}}
+    }
+  ]
+}

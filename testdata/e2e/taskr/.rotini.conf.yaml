@@ -1,0 +1,11 @@
+version: 0.0.0
+generate:
+  packages:
+    - type: main
+      file: cmd/taskr/main.go
+    - type: cmd
+      file: internal/cmd/taskr/zz_rotini.go
+  features:
+    - type: tools
+      enabled: true
+      go: true

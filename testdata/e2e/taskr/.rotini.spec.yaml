@@ -1,0 +1,58 @@
+version: 0.0.0
+command:
+  name: taskr
+  summary: keep a list of tasks
+  env_prefix: TASKR
+  flags:
+    - name: verbose
+      summary: say more
+      identifiers: [-v, --verbose]
+      cascading: true
+      schema: { type: count }
+  commands:
+    - name: add
+      summary: add a task
+      effects: { kind: write }
+      arguments:
+        - name: title
+          summary: what to do
+          schema: { type: string, required: true }
+      flags:
+        - name: tag
+          summary: tags for the task
+          identifiers: [--tag]
+          schema: { type: '[]string' }
+        - name: priority
+          summary: how urgent it is
+          identifiers: [--priority]
+          schema: { type: string, enum: [low, high], default: low }
+        - name: done
+          summary: add it as done
+          identifiers: [--done]
+          schema: { type: bool, negatable: true, default: true }
+        - name: label
+          summary: labels for the task
+          identifiers: [--label]
+          schema: { type: 'map[string]string' }
+        - name: note
+          summary: a note, or @file to read it from a file
+          identifiers: [--note]
+          agent: true
+          schema: { type: string, from: [value, file] }
+      output:
+        type: object
+        required: [title]
+        properties:
+          title: { type: string }
+          tags: { type: '[]string' }
+          priority: { type: string }
+          done: { type: bool }
+          verbose: { type: int }
+          label: { type: 'map[string]string' }
+          note: { type: string }
+    - name: fail
+      summary: fail on purpose
+      effects: { kind: read }
+    - name: mcp
+      summary: serve the tools over MCP
+      agent: false

@@ -1,0 +1,225 @@
+package mcp
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// taskrTools reads the tools document rotini's generator writes for its taskr fixture (copied
+// from rotini's goldens), so a change to the format shows here.
+func taskrTools(t *testing.T) map[string]Tool {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "taskr.mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := ParseTools(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]Tool{}
+	for _, tl := range tools {
+		m[tl.Name] = tl
+	}
+	return m
+}
+
+func jsonArgs(t *testing.T, s string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestArgv_taskr(t *testing.T) {
+	tools := taskrTools(t)
+	cases := []struct {
+		tool, args string
+		argv       []string
+		stdin      string
+	}{
+		{"taskr_add", `{"title":"buy milk"}`, []string{"add", "--", "buy milk"}, ""},
+		{"taskr_add", `{"title":"-v","tag":["home","x,y"],"priority":"high","due":"2026-10-01","verbose":3}`,
+			[]string{"add", "--due=2026-10-01", "--priority=high", "--tag=home", "--tag=x,y", "--verbose", "--verbose", "--verbose", "--", "-v"}, ""},
+		{"taskr_list", `{}`, []string{"list", "--format=json"}, ""},
+		{"taskr_list", `{"label":{"team":"core","a":"b=c"},"page":"tok"}`,
+			[]string{"list", "--format=json", "--label=a=b=c", "--label=team=core", "--page=tok"}, ""},
+		{"taskr_purge", `{"dry-run":true,"yes":false}`, []string{"purge", "--dry-run", "--yes=false"}, ""},
+		{"taskr_import", `{"stdin":[{"id":1,"title":"a"}]}`, []string{"import"}, `[{"id":1,"title":"a"}]` + "\n"},
+		{"taskr_remote_sync", `{"prune":true}`, []string{"remote", "sync", "--prune"}, ""},
+		{"taskr_add", `{"title":"x","verbose":0}`, []string{"add", "--", "x"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool+" "+tc.args, func(t *testing.T) {
+			tl, ok := tools[tc.tool]
+			if !ok {
+				t.Fatalf("no tool %s", tc.tool)
+			}
+			argv, stdin, err := tl.Invoke.Argv(jsonArgs(t, tc.args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(argv, tc.argv) {
+				t.Errorf("argv = %q\nwant   %q", argv, tc.argv)
+			}
+			if string(stdin) != tc.stdin {
+				t.Errorf("stdin = %q, want %q", stdin, tc.stdin)
+			}
+		})
+	}
+}
+
+func TestArgv_rules(t *testing.T) {
+	inv := Invoke{
+		Path: []string{"run"},
+		Arguments: []Argument{
+			{Name: "first", Kind: KindScalar},
+			{Name: "rest", Kind: KindList, Variadic: true},
+		},
+		Flags: map[string]Flag{
+			"csv":   {Flag: "--csv", Kind: KindList, Type: "[]string", Separator: ","},
+			"in":    {Flag: "--in", Kind: KindScalar, Type: "string", From: []string{"value", "file", "stdin"}},
+			"n":     {Flag: "--n", Kind: KindScalar, Type: "int"},
+			"meta":  {Flag: "--meta", Kind: KindMap, Type: "map[string]any"},
+			"obj":   {Flag: "--obj", Kind: KindObject, Type: "DB"},
+			"objs":  {Flag: "--objs", Kind: KindObject, Type: "[]DB"},
+			"plain": {Flag: "--plain", Kind: KindList, Type: "[]string"},
+			"key":   {Flag: "--key", Kind: KindScalar, Type: "string", Secret: true},
+			"argf":  {Flag: "--argf", Kind: KindScalar, Type: "float64"},
+		},
+	}
+	ok := []struct {
+		args string
+		want []string
+	}{
+		{`{"csv":["a","b,c","say \"hi\""]}`, []string{"run", `--csv=a`, `--csv="b,c"`, `--csv="say ""hi"""`}},
+		{`{"csv":[]}`, []string{"run", "--csv="}},
+		{`{"plain":[]}`, []string{"run"}},
+		{`{"in":"@file.txt"}`, []string{"run", "--in=@@file.txt"}},
+		{`{"n":3.0}`, []string{"run", "--n=3"}},
+		{`{"n":12345678901234567890}`, []string{"run", "--n=12345678901234567890"}},
+		{`{"argf":1e21}`, []string{"run", "--argf=1e21"}},
+		{`{"meta":{"b":true,"a":2.5,"c":"text","d":null}}`, []string{"run", "--meta=a=2.5", "--meta=b=true", "--meta=c=text", "--meta=d=null"}},
+		{`{"obj":{"host":"h","port":5432}}`, []string{"run", `--obj={"host":"h","port":5432}`}},
+		{`{"objs":[{"a":1},{"a":"<b>"}]}`, []string{"run", `--objs={"a":1}`, `--objs={"a":"<b>"}`}},
+		{`{"first":"--help","rest":["-x","y"]}`, []string{"run", "--", "--help", "-x", "y"}},
+		{`{"first":"only","rest":[]}`, []string{"run", "--", "only"}},
+	}
+	for _, tc := range ok {
+		t.Run(tc.args, func(t *testing.T) {
+			argv, _, err := inv.Argv(jsonArgs(t, tc.args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(argv, tc.want) {
+				t.Errorf("argv = %q\nwant   %q", argv, tc.want)
+			}
+		})
+	}
+	bad := []struct {
+		args, param, reason string
+	}{
+		{`{"bogus":1}`, "bogus", "no such parameter"},
+		{`{"key":"s3cret"}`, "key", "secret"},
+		{`{"in":"-"}`, "in", "reads stdin"},
+		{`{"rest":["x"]}`, "rest", "left out"},
+		{`{"n":2.5}`, "n", "whole number"},
+		{`{"meta":{"a":"true"}}`, "meta", "read back"},
+		{`{"meta":{"a=b":"c"}}`, "meta", "key"},
+		{`{"meta":{"a":{"nested":1}}}`, "meta", "free-form"},
+		{`{"csv":["a\rb"]}`, "csv", "carriage return"},
+		{`{"csv":"notalist"}`, "csv", "array"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.args, func(t *testing.T) {
+			_, _, err := inv.Argv(jsonArgs(t, tc.args))
+			var ae *ArgvError
+			if !errors.As(err, &ae) || ae.Param != tc.param || !strings.Contains(ae.Reason, tc.reason) {
+				t.Fatalf("err = %v, want an ArgvError for %s mentioning %q", err, tc.param, tc.reason)
+			}
+			if strings.Contains(err.Error(), "s3cret") {
+				t.Error("the error echoes the secret")
+			}
+		})
+	}
+}
+
+func TestArgv_passthrough(t *testing.T) {
+	whole := Invoke{Path: []string{"exec"}, Passthrough: true, Arguments: []Argument{{Name: "argv", Kind: KindList, Variadic: true}}}
+	argv, _, err := whole.Argv(jsonArgs(t, `{"argv":["ls","-la"]}`))
+	if err != nil || !slices.Equal(argv, []string{"exec", "ls", "-la"}) {
+		t.Errorf("command passthrough: argv = %q, %v", argv, err)
+	}
+	partial := Invoke{Path: []string{"run"}, Passthrough: true, Arguments: []Argument{
+		{Name: "script", Kind: KindScalar},
+		{Name: "args", Kind: KindList, Variadic: true, Passthrough: true},
+	}}
+	argv, _, err = partial.Argv(jsonArgs(t, `{"script":"s.sh","args":["-v","x"]}`))
+	if err != nil || !slices.Equal(argv, []string{"run", "--", "s.sh", "-v", "x"}) {
+		t.Errorf("partial passthrough: argv = %q, %v", argv, err)
+	}
+}
+
+func TestArgv_stdinFormats(t *testing.T) {
+	for _, tc := range []struct {
+		format, args, want string
+		err                bool
+	}{
+		{"json", `{"stdin":{"a":1}}`, "{\"a\":1}\n", false},
+		{"yaml", `{"stdin":[1,2]}`, "[1,2]\n", false},
+		{"lines", `{"stdin":"a\nb\n"}`, "a\nb\n", false},
+		{"text", `{"stdin":5}`, "", true},
+	} {
+		inv := Invoke{Path: []string{}, Stdin: &Stdin{Param: "stdin", Format: tc.format}}
+		_, stdin, err := inv.Argv(jsonArgs(t, tc.args))
+		if (err != nil) != tc.err || string(stdin) != tc.want {
+			t.Errorf("%s: stdin = %q, err = %v", tc.format, stdin, err)
+		}
+	}
+}
+
+func FuzzArgv(f *testing.F) {
+	f.Add("value", "-x", "@f")
+	f.Add("", "--", "-")
+	f.Add("a,b", "\"q\"", " lead")
+	inv := Invoke{
+		Path:      []string{"cmd"},
+		Arguments: []Argument{{Name: "pos", Kind: KindScalar}},
+		Flags: map[string]Flag{
+			"s":    {Flag: "--s", Kind: KindScalar, Type: "string", From: []string{"value", "file"}},
+			"list": {Flag: "--list", Kind: KindList, Type: "[]string", Separator: ","},
+		},
+	}
+	f.Fuzz(func(t *testing.T, s, pos, item string) {
+		argv, _, err := inv.Argv(map[string]any{"s": s, "pos": pos, "list": []any{item}})
+		if err != nil {
+			if _, ok := errors.AsType[*ArgvError](err); !ok {
+				t.Fatalf("not an ArgvError: %v", err)
+			}
+			return
+		}
+		dash := slices.Index(argv, "--")
+		if dash < 0 || dash != len(argv)-2 || argv[len(argv)-1] != pos {
+			t.Fatalf("the positional isn't alone after --: %q", argv)
+		}
+		for _, w := range argv[1:dash] {
+			if !strings.HasPrefix(w, "--s=") && !strings.HasPrefix(w, "--list=") {
+				t.Fatalf("a flag word without its flag: %q", w)
+			}
+		}
+		for _, w := range argv[1:dash] {
+			if v, ok := strings.CutPrefix(w, "--s="); ok && strings.HasPrefix(s, "@") && v != "@"+s {
+				t.Fatalf("an @ value on a from:[file] flag isn't escaped: %q", w)
+			}
+		}
+	})
+}

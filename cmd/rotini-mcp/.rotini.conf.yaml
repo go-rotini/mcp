@@ -1,0 +1,20 @@
+version: 0.0.0
+generate:
+  packages:
+    - type: main
+      file: cmd/rotini-mcp/main.go
+      package: main
+    - type: cmd
+      file: internal/cmd/rotinimcp/zz_rotini.go
+      package: rotinimcp
+  features:
+    - type: help
+      enabled: true
+    - type: completion
+      enabled: true
+    - type: man
+      enabled: false
+    - type: markdown
+      enabled: false
+validate:
+  fail: collect
