@@ -46,7 +46,7 @@ type Invoke struct {
 	Flags       map[string]Flag `json:"flags,omitempty"`
 	Fixed       []string        `json:"fixed,omitempty"`
 	Stdin       *Stdin          `json:"stdin,omitempty"`
-	Passthrough bool            `json:"passthrough,omitempty"`
+	Passthrough bool            `json:"passthrough,omitempty"` // the command takes every word after its path as typed: no "--"
 	Stream      bool            `json:"stream,omitempty"`
 	Wrapped     bool            `json:"wrapped,omitempty"`
 }
@@ -56,21 +56,22 @@ type Argument struct {
 	Name        string   `json:"name"`
 	Kind        string   `json:"kind"`
 	Variadic    bool     `json:"variadic,omitempty"`
-	Passthrough bool     `json:"passthrough,omitempty"`
+	Passthrough bool     `json:"passthrough,omitempty"` // it and every later word are taken as typed; "--" still comes first
 	Secret      bool     `json:"secret,omitempty"`
-	From        []string `json:"from,omitempty"`
+	From        []string `json:"from,omitempty"` // file: a leading @ reads a file; stdin: "-" reads stdin
 }
 
 // Flag is how one flag parameter is written.
 type Flag struct {
-	Flag      string   `json:"flag"`
-	Kind      string   `json:"kind"`
-	Type      string   `json:"type,omitempty"`
-	Negated   string   `json:"negated,omitempty"`
-	Separator string   `json:"separator,omitempty"`
-	Role      string   `json:"role,omitempty"`
-	Secret    bool     `json:"secret,omitempty"`
-	From      []string `json:"from,omitempty"`
+	Flag       string   `json:"flag"`
+	Kind       string   `json:"kind"`
+	Type       string   `json:"type,omitempty"`
+	Negated    string   `json:"negated,omitempty"`
+	Separator  string   `json:"separator,omitempty"`
+	Role       string   `json:"role,omitempty"`
+	Secret     bool     `json:"secret,omitempty"`
+	From       []string `json:"from,omitempty"`        // file: a leading @ reads a file; stdin: "-" reads stdin
+	HasDefault bool     `json:"has_default,omitempty"` // a count with a default: leaving it out isn't 0
 }
 
 // Stdin is the parameter whose value the command reads on stdin, and its format (json, yaml,

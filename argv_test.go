@@ -95,6 +95,8 @@ func TestArgv_rules(t *testing.T) {
 			"plain": {Flag: "--plain", Kind: KindList, Type: "[]string"},
 			"key":   {Flag: "--key", Kind: KindScalar, Type: "string", Secret: true},
 			"argf":  {Flag: "--argf", Kind: KindScalar, Type: "float64"},
+			"v":     {Flag: "-v", Kind: KindCount, Type: "count"},
+			"level": {Flag: "--level", Kind: KindCount, Type: "count", HasDefault: true},
 		},
 	}
 	ok := []struct {
@@ -113,6 +115,11 @@ func TestArgv_rules(t *testing.T) {
 		{`{"objs":[{"a":1},{"a":"<b>"}]}`, []string{"run", `--objs={"a":1}`, `--objs={"a":"<b>"}`}},
 		{`{"first":"--help","rest":["-x","y"]}`, []string{"run", "--", "--help", "-x", "y"}},
 		{`{"first":"only","rest":[]}`, []string{"run", "--", "only"}},
+		{`{"first":"@x","rest":["-"]}`, []string{"run", "--", "@x", "-"}},
+		{`{"v":0}`, []string{"run"}},
+		{`{"v":2}`, []string{"run", "-v", "-v"}},
+		{`{"level":2}`, []string{"run", "--level", "--level"}},
+		{`{"level":null}`, []string{"run"}},
 	}
 	for _, tc := range ok {
 		t.Run(tc.args, func(t *testing.T) {
@@ -130,6 +137,9 @@ func TestArgv_rules(t *testing.T) {
 	}{
 		{`{"bogus":1}`, "bogus", "no such parameter"},
 		{`{"key":"s3cret"}`, "key", "secret"},
+		{`{"key":"s3cret"}`, "key", "server's environment"},
+		{`{"level":0}`, "level", "default"},
+		{`{"v":-1}`, "v", "at least 0"},
 		{`{"in":"-"}`, "in", "reads stdin"},
 		{`{"rest":["x"]}`, "rest", "left out"},
 		{`{"n":2.5}`, "n", "whole number"},
@@ -155,17 +165,56 @@ func TestArgv_rules(t *testing.T) {
 
 func TestArgv_passthrough(t *testing.T) {
 	whole := Invoke{Path: []string{"exec"}, Passthrough: true, Arguments: []Argument{{Name: "argv", Kind: KindList, Variadic: true}}}
-	argv, _, err := whole.Argv(jsonArgs(t, `{"argv":["ls","-la"]}`))
-	if err != nil || !slices.Equal(argv, []string{"exec", "ls", "-la"}) {
+	argv, _, err := whole.Argv(jsonArgs(t, `{"argv":["ls","-la","--"]}`))
+	if err != nil || !slices.Equal(argv, []string{"exec", "ls", "-la", "--"}) {
 		t.Errorf("command passthrough: argv = %q, %v", argv, err)
 	}
-	partial := Invoke{Path: []string{"run"}, Passthrough: true, Arguments: []Argument{
+	partial := Invoke{Path: []string{"run"}, Arguments: []Argument{
 		{Name: "script", Kind: KindScalar},
 		{Name: "args", Kind: KindList, Variadic: true, Passthrough: true},
 	}}
 	argv, _, err = partial.Argv(jsonArgs(t, `{"script":"s.sh","args":["-v","x"]}`))
 	if err != nil || !slices.Equal(argv, []string{"run", "--", "s.sh", "-v", "x"}) {
-		t.Errorf("partial passthrough: argv = %q, %v", argv, err)
+		t.Errorf("passthrough argument: argv = %q, %v", argv, err)
+	}
+	only := Invoke{Path: []string{"run"}, Arguments: []Argument{{Name: "args", Kind: KindList, Variadic: true, Passthrough: true}}}
+	argv, _, err = only.Argv(jsonArgs(t, `{"args":["-x"]}`))
+	if err != nil || !slices.Equal(argv, []string{"run", "--", "-x"}) {
+		t.Errorf("first word of a passthrough argument: argv = %q, %v", argv, err)
+	}
+}
+
+func TestArgv_fromFile(t *testing.T) {
+	inv := Invoke{
+		Path: []string{"cat"},
+		Arguments: []Argument{
+			{Name: "src", Kind: KindScalar, From: []string{"value", "file"}},
+			{Name: "rest", Kind: KindList, Variadic: true, From: []string{"stdin"}},
+		},
+		Flags: map[string]Flag{
+			"tag":  {Flag: "--tag", Kind: KindList, Type: "[]string", Separator: ",", From: []string{"file"}},
+			"name": {Flag: "--name", Kind: KindScalar, Type: "string"},
+		},
+	}
+	argv, _, err := inv.Argv(jsonArgs(t, `{"src":"@a","rest":["@b"],"tag":["@c","d"],"name":"@e"}`))
+	want := []string{"cat", "--name=@e", "--tag=@@c", "--tag=d", "--", "@@a", "@b"}
+	if err != nil || !slices.Equal(argv, want) {
+		t.Errorf("argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	if _, _, err := inv.Argv(jsonArgs(t, `{"src":"x","rest":["-"]}`)); err == nil {
+		t.Error(`"-" on an argument that reads stdin was written`)
+	}
+	if argv, _, err := inv.Argv(jsonArgs(t, `{"src":"-"}`)); err != nil || !slices.Equal(argv, []string{"cat", "--", "-"}) {
+		t.Errorf(`"-" without from stdin: argv = %q, %v`, argv, err)
+	}
+}
+
+func TestArgv_secretArgument(t *testing.T) {
+	inv := Invoke{Path: []string{"login"}, Arguments: []Argument{{Name: "token", Kind: KindScalar, Secret: true}}}
+	_, _, err := inv.Argv(jsonArgs(t, `{"token":"s3cret"}`))
+	ae, ok := errors.AsType[*ArgvError](err)
+	if !ok || ae.Param != "token" || !strings.Contains(ae.Reason, "environment") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("err = %v, want a refusal pointing at the environment", err)
 	}
 }
 
@@ -191,6 +240,7 @@ func FuzzArgv(f *testing.F) {
 	f.Add("value", "-x", "@f")
 	f.Add("", "--", "-")
 	f.Add("a,b", "\"q\"", " lead")
+	f.Add("@@x", "@y", "@z")
 	inv := Invoke{
 		Path:      []string{"cmd"},
 		Arguments: []Argument{{Name: "pos", Kind: KindScalar}},

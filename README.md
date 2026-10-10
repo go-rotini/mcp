@@ -118,8 +118,9 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
   runs. A `null` parameter counts as left out.
 - **The command line** is the command's path, the tool's fixed flags (such as `--format=json`
   from the machine-output role), one attached occurrence per flag value in parameter-name order,
-  then `--` and the positionals. A secret parameter is refused: supply secrets through the
-  server's environment, which each run gets.
+  then `--` and the positionals (a passthrough command's words follow its path with no `--`). A
+  count of 0 writes nothing, so it is refused on a count flag with a default. A secret parameter
+  is refused: supply secrets through the server's environment, which each run gets.
 - **Stdin** is the `stdin` parameter for a command that reads stdin, and empty otherwise.
 - **A zero exit** is a success. With an output schema, stdout's JSON is the structured content
   and its text; text after it (such as the default reporter's messages) goes in the result's

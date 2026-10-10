@@ -57,6 +57,13 @@ func TestEndToEnd(t *testing.T) {
 	taskrBin := filepath.Join(bin, "taskr"+exeSuffix())
 	gocmd(t, app, []string{"GOWORK=off"}, "build", "-o", taskrBin, "./cmd/taskr")
 
+	// A count flag takes no value, so an explicit 0 has no spelling: the server leaves the flag
+	// out, and refuses 0 over a default.
+	zero := exec.Command(taskrBin, "add", "--verbose=0", "--", "x")
+	if out, err := zero.CombinedOutput(); err == nil || !strings.Contains(string(out), "takes no value") {
+		t.Errorf("taskr add --verbose=0: %v\n%s", err, out)
+	}
+
 	forms := map[string]*exec.Cmd{
 		"rotini-mcp serve": exec.Command(serverBin, "serve", "--tools", toolsFile, "--bin", taskrBin),
 		"taskr mcp":        exec.Command(taskrBin, "mcp"),
@@ -86,7 +93,7 @@ func checkEndToEnd(t *testing.T, cs *sdk.ClientSession) {
 	for _, tl := range list.Tools {
 		names = append(names, tl.Name)
 	}
-	if !slices.Equal(names, []string{"taskr_add", "taskr_fail"}) {
+	if !slices.Equal(names, []string{"taskr_add", "taskr_exec", "taskr_fail", "taskr_run"}) {
 		t.Fatalf("tools = %v; the mcp command must not be one", names)
 	}
 
@@ -103,9 +110,37 @@ func checkEndToEnd(t *testing.T, cs *sdk.ClientSession) {
 		t.Fatalf("taskr_add: %s", text(res))
 	}
 	got, _ := json.Marshal(res.StructuredContent)
-	want := `{"done":false,"label":{"k":"x=y","team":"core"},"note":"--not-a-flag","priority":"high","tags":["home","a b"],"title":"-starts with a dash","verbose":2}`
+	want := `{"done":false,"label":{"k":"x=y","team":"core"},"note":"--not-a-flag","priority":"high","tags":["home","a b"],"title":"-starts with a dash","token":false,"verbose":2}`
 	if string(got) != want {
 		t.Errorf("taskr_add bound\n%s\nwant\n%s", got, want)
+	}
+
+	// @ is doubled only where a leading @ would read a file: note has from [value, file], the
+	// title argument doesn't.
+	res = call(t, cs, "taskr_add", map[string]any{"title": "@home", "note": "@literal", "verbose": 0})
+	got, _ = json.Marshal(res.StructuredContent)
+	if res.IsError || !strings.Contains(string(got), `"title":"@home"`) || !strings.Contains(string(got), `"note":"@literal"`) ||
+		!strings.Contains(string(got), `"verbose":0`) {
+		t.Errorf("@ values: %s %s", got, text(res))
+	}
+
+	res = call(t, cs, "taskr_add", map[string]any{"title": "x", "token": "hunter2"})
+	if !res.IsError || !strings.Contains(text(res), "environment") || strings.Contains(text(res), "hunter2") {
+		t.Errorf("a secret on argv: %s", text(res))
+	}
+
+	// A passthrough argument still comes after "--"; its own words (a later "--" too) are kept.
+	res = call(t, cs, "taskr_run", map[string]any{"script": "-s.sh", "args": []any{"-v", "--", "x"}})
+	got, _ = json.Marshal(res.StructuredContent)
+	if want := `{"args":["-v","--","x"],"script":"-s.sh"}`; res.IsError || string(got) != want {
+		t.Errorf("taskr_run bound %s %s, want %s", got, text(res), want)
+	}
+
+	// A passthrough command takes every word as typed, so no "--" is written.
+	res = call(t, cs, "taskr_exec", map[string]any{"argv": []any{"ls", "-la", "--"}})
+	got, _ = json.Marshal(res.StructuredContent)
+	if want := `{"argv":["ls","-la","--"]}`; res.IsError || string(got) != want {
+		t.Errorf("taskr_exec bound %s %s, want %s", got, text(res), want)
 	}
 
 	res = call(t, cs, "taskr_add", map[string]any{"title": "defaults", "tag": nil})

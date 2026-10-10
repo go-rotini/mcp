@@ -34,16 +34,18 @@ func (e *ArgvError) Error() string {
 // The command's path comes first, then the fixed flags (the machine-output flag), then one
 // attached occurrence per flag value (--name=value), in parameter-name order. A list or map
 // repeats the flag (key=value for a map), a separator-split one quotes items that hold the
-// separator, an object is JSON, a count repeats the bare flag, and a bool is its bare flag for
-// true and its negated form (or --name=false) for false. A "--" comes before the positionals,
-// so a value that looks like a flag stays a positional; a passthrough command's words follow
-// its path as they are. On a parameter that reads `@file` values, a value starting with @ is
-// written with the @ doubled. A null or missing parameter is left out.
+// separator, an object is JSON, a count repeats the bare flag (0 writes nothing), and a bool is
+// its bare flag for true and its negated form (or --name=false) for false. A "--" comes before
+// the positionals, so a value that looks like a flag stays a positional, also when the last
+// argument is a passthrough one; a passthrough command's words follow its path as they are. On
+// a parameter whose `from` includes file, a value starting with @ is written with the @
+// doubled. A null or missing parameter is left out.
 //
 // A call no command line can express is an [*ArgvError]: an unknown parameter, a secret (a
-// command line is visible to other users of the machine), "-" on a parameter that reads stdin
-// from it, an argument given after one left out, and map keys or free-form values that don't
-// read back as given.
+// command line is visible to other users of the machine; the program reads secrets from the
+// server's environment), a count of 0 on a count flag with a default, "-" on a parameter that
+// reads stdin from it, an argument given after one left out, and map keys or free-form values
+// that don't read back as given.
 func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err error) {
 	for name := range args {
 		if _, ok := inv.Flags[name]; ok {
@@ -81,18 +83,12 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 		return nil, nil, err
 	}
 	if len(words) > 0 {
-		if !inv.commandPassthrough() {
+		if !inv.Passthrough {
 			argv = append(argv, "--")
 		}
 		argv = append(argv, words...)
 	}
 	return argv, stdin, nil
-}
-
-// commandPassthrough reports whether every word after the command is taken as typed, with no
-// "--". A passthrough argument (partial passthrough) still takes the positionals after "--".
-func (inv Invoke) commandPassthrough() bool {
-	return inv.Passthrough && !slices.ContainsFunc(inv.Arguments, func(a Argument) bool { return a.Passthrough })
 }
 
 // positionals spells the arguments in order; each one given must follow only given ones.
@@ -159,6 +155,9 @@ func flagWords(name string, f Flag, v any) ([]string, error) {
 		n, err := countValue(v)
 		if err != nil {
 			return fail(err)
+		}
+		if n == 0 && f.HasDefault {
+			return fail(errors.New("a count of 0 can't be written over the flag's default, since a count flag takes no value; leave the parameter out for the default"))
 		}
 		return slices.Repeat([]string{f.Flag}, n), nil
 	case KindList:
@@ -247,7 +246,7 @@ func refuseSecret(name string, secret bool) error {
 	if !secret {
 		return nil
 	}
-	return &ArgvError{Param: name, Reason: "a secret can't be passed on the command line, where other users of the machine can read it; supply it through the server's environment"}
+	return &ArgvError{Param: name, Reason: "a secret isn't passed on the command line, where other users of the machine can read it; leave the parameter out and set the program's environment variable for it in the server's environment, which each run gets"}
 }
 
 // escapeMarkers escapes a value its parameter's `from:` modes would read as a file (a leading

@@ -210,6 +210,22 @@ func TestServer_nullAndMissing(t *testing.T) {
 	}
 }
 
+func TestServer_countOverDefault(t *testing.T) {
+	cs := connect(t, fakeDoc(t))
+	res := call(t, cs, "fake_echo", map[string]any{"level": 2, "n": 0})
+	if res.IsError {
+		t.Fatalf("error result: %s", text(res))
+	}
+	argv, _ := structured(t, res)["argv"].([]any)
+	if fmt.Sprint(argv) != "[--json --level --level]" {
+		t.Errorf("argv = %q", argv)
+	}
+	res = call(t, cs, "fake_echo", map[string]any{"level": 0})
+	if !res.IsError || !strings.Contains(text(res), "default") {
+		t.Fatalf("want a refusal of 0 over the default, got %s", text(res))
+	}
+}
+
 func TestServer_badArguments(t *testing.T) {
 	cs := connect(t, fakeDoc(t))
 	for name, args := range map[string]map[string]any{

@@ -39,6 +39,11 @@ command:
           identifiers: [--note]
           agent: true
           schema: { type: string, from: [value, file] }
+        - name: token
+          summary: the account token
+          identifiers: [--token]
+          agent: true
+          schema: { type: string, secret: true }
       output:
         type: object
         required: [title]
@@ -50,6 +55,39 @@ command:
           verbose: { type: int }
           label: { type: 'map[string]string' }
           note: { type: string }
+          token: { type: bool }
+    - name: run
+      summary: run a script with its arguments
+      agent: true
+      effects: { kind: read }
+      arguments:
+        - name: script
+          summary: the script
+          schema: { type: string, required: true }
+        - name: args
+          summary: the script's arguments
+          passthrough: true
+          schema: { type: '[]string' }
+      output:
+        type: object
+        required: [script, args]
+        properties:
+          script: { type: string }
+          args: { type: '[]string' }
+    - name: exec
+      summary: run a command as typed
+      agent: true
+      effects: { kind: read }
+      passthrough: true
+      arguments:
+        - name: argv
+          summary: the command and its arguments
+          schema: { type: '[]string' }
+      output:
+        type: object
+        required: [argv]
+        properties:
+          argv: { type: '[]string' }
     - name: fail
       summary: fail on purpose
       effects: { kind: read }

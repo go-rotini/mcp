@@ -12,6 +12,7 @@
           "words": {"type": "array", "items": {"type": "string"}},
           "tag": {"type": "array", "items": {"type": "string"}},
           "n": {"type": "integer", "minimum": 0},
+          "level": {"type": "integer", "minimum": 0, "default": 1},
           "on": {"type": "boolean"},
           "label": {"type": "object", "additionalProperties": {"type": "string"}},
           "note": {"type": "string"},
@@ -31,6 +32,7 @@
           "flags": {
             "tag": {"flag": "--tag", "kind": "list", "type": "[]string"},
             "n": {"flag": "-n", "kind": "count", "type": "count"},
+            "level": {"flag": "--level", "kind": "count", "type": "count", "has_default": true},
             "on": {"flag": "--on", "kind": "scalar", "type": "bool", "negated": "--no-on"},
             "label": {"flag": "--label", "kind": "map", "type": "map[string]string"},
             "note": {"flag": "--note", "kind": "scalar", "type": "string", "from": ["value", "file"]}
