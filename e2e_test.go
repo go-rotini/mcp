@@ -93,7 +93,7 @@ func checkEndToEnd(t *testing.T, cs *sdk.ClientSession) {
 	for _, tl := range list.Tools {
 		names = append(names, tl.Name)
 	}
-	if !slices.Equal(names, []string{"taskr_add", "taskr_exec", "taskr_fail", "taskr_run"}) {
+	if !slices.Equal(names, []string{"taskr_add", "taskr_conf", "taskr_exec", "taskr_fail", "taskr_run"}) {
 		t.Fatalf("tools = %v; the mcp command must not be one", names)
 	}
 
@@ -136,11 +136,34 @@ func checkEndToEnd(t *testing.T, cs *sdk.ClientSession) {
 		t.Errorf("taskr_run bound %s %s, want %s", got, text(res), want)
 	}
 
-	// A passthrough command takes every word as typed, so no "--" is written.
-	res = call(t, cs, "taskr_exec", map[string]any{"argv": []any{"ls", "-la", "--"}})
+	// A passthrough command takes every word as typed, so no "--" is written, and the
+	// machine-output flag and the inherited flags go before its name.
+	res = call(t, cs, "taskr_exec", map[string]any{"argv": []any{"ls", "-la", "--"}, "verbose": 2})
 	got, _ = json.Marshal(res.StructuredContent)
-	if want := `{"argv":["ls","-la","--"]}`; res.IsError || string(got) != want {
+	if want := `{"argv":["ls","-la","--"],"json":true,"verbose":2}`; res.IsError || string(got) != want {
 		t.Errorf("taskr_exec bound %s %s, want %s", got, text(res), want)
+	}
+
+	// taskr reads response files (prefix +): a raw word naming one is passed as written.
+	res = call(t, cs, "taskr_exec", map[string]any{"argv": []any{"+/etc/hosts", "++x", "+", "--", "+after"}})
+	got, _ = json.Marshal(res.StructuredContent)
+	if want := `{"argv":["+/etc/hosts","++x","+","--","+after"],"json":true,"verbose":0}`; res.IsError || string(got) != want {
+		t.Errorf("taskr_exec with response files bound %s %s, want %s", got, text(res), want)
+	}
+
+	// Items of a separator-split argument are quoted on their own; nested map keys are written
+	// as dotted keys.
+	res = call(t, cs, "taskr_conf", map[string]any{
+		"keys": []any{"a", "b,c", `say "hi"`},
+		"set":  map[string]any{"db": map[string]any{"host": "h,1", "port": 5432}, "debug": true},
+	})
+	got, _ = json.Marshal(res.StructuredContent)
+	if want := `{"keys":["a","b,c","say \"hi\""],"set":{"db":{"host":"h,1","port":5432},"debug":true}}`; res.IsError || string(got) != want {
+		t.Errorf("taskr_conf bound %s %s, want %s", got, text(res), want)
+	}
+	res = call(t, cs, "taskr_conf", map[string]any{"set": map[string]any{"a.b": "x"}})
+	if !res.IsError || !strings.Contains(text(res), "dotted keys") {
+		t.Errorf("a dotted key holding a dot: %s", text(res))
 	}
 
 	res = call(t, cs, "taskr_add", map[string]any{"title": "defaults", "tag": nil})

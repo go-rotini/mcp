@@ -22,7 +22,11 @@ func (*taskrExecHandler) Run(ctx context.Context, rtx *rotini.Context) {
 		rtx.HaltWith(err)
 		return
 	}
-	out := map[string]any{"argv": append([]string{}, in.TaskrExec.Arguments.Argv...)}
+	out := map[string]any{
+		"argv":    append([]string{}, in.TaskrExec.Arguments.Argv...),
+		"json":    in.Taskr.Flags.JSON,
+		"verbose": in.Taskr.Flags.Verbose,
+	}
 	if err := json.NewEncoder(rtx.Stdout).Encode(out); err != nil {
 		rtx.HaltWith(err)
 	}

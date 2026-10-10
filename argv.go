@@ -33,19 +33,25 @@ func (e *ArgvError) Error() string {
 //
 // The command's path comes first, then the fixed flags (the machine-output flag), then one
 // attached occurrence per flag value (--name=value), in parameter-name order. A list or map
-// repeats the flag (key=value for a map), a separator-split one quotes items that hold the
-// separator, an object is JSON, a count repeats the bare flag (0 writes nothing), and a bool is
-// its bare flag for true and its negated form (or --name=false) for false. A "--" comes before
-// the positionals, so a value that looks like a flag stays a positional, also when the last
-// argument is a passthrough one; a passthrough command's words follow its path as they are. On
-// a parameter whose `from` includes file, a value starting with @ is written with the @
+// repeats the flag (key=value for a map, with nested keys flattened to a.b=value on a flag
+// that takes dotted keys), a separator-split one quotes items that hold the separator, an
+// object is JSON, a count repeats the bare flag (0 writes nothing), and a bool is its bare flag
+// for true and its negated form (or --name=false) for false. A "--" comes before the
+// positionals, so a value that looks like a flag stays a positional, also when the last
+// argument is a passthrough one; a variadic argument with a separator quotes each item on its
+// own. On a parameter whose `from` includes file, a value starting with @ is written with the @
 // doubled. A null or missing parameter is left out.
+//
+// A passthrough command reads every word after its name as typed, so its flags (all inherited:
+// a passthrough command declares none) and the fixed flags come before its name, and its words
+// follow it with no "--". When the program reads response files, a word before any "--" that
+// starts with the prefix has it doubled, so the program doesn't read it as a file.
 //
 // A call no command line can express is an [*ArgvError]: an unknown parameter, a secret (a
 // command line is visible to other users of the machine; the program reads secrets from the
-// server's environment), a count of 0 on a count flag with a default, "-" on a parameter that
-// reads stdin from it, an argument given after one left out, and map keys or free-form values
-// that don't read back as given.
+// server's environment), a count of 0 on a count flag with a default, an explicit empty list or
+// map on a flag without a separator, "-" on a parameter that reads stdin from it, an argument
+// given after one left out, and map keys or free-form values that don't read back as given.
 func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err error) {
 	for name := range args {
 		if _, ok := inv.Flags[name]; ok {
@@ -59,7 +65,7 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 		}
 		return nil, nil, &ArgvError{Param: name, Reason: "the tool has no such parameter"}
 	}
-	argv = append(slices.Clone(inv.Path), inv.Fixed...)
+	flags := slices.Clone(inv.Fixed)
 	for _, name := range slices.Sorted(maps.Keys(inv.Flags)) {
 		v, ok := args[name]
 		if !ok || v == nil {
@@ -69,7 +75,7 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 		if err != nil {
 			return nil, nil, err
 		}
-		argv = append(argv, words...)
+		flags = append(flags, words...)
 	}
 	if inv.Stdin != nil {
 		if v, ok := args[inv.Stdin.Param]; ok && v != nil {
@@ -82,13 +88,39 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(words) > 0 {
-		if !inv.Passthrough {
-			argv = append(argv, "--")
+	if !inv.Passthrough {
+		argv = append(slices.Clone(inv.Path), flags...)
+		if len(words) > 0 {
+			argv = append(append(argv, "--"), words...)
 		}
-		argv = append(argv, words...)
+		return argv, stdin, nil
 	}
-	return argv, stdin, nil
+	n := len(inv.Path)
+	if n == 0 && len(flags) > 0 {
+		return nil, nil, &ArgvError{Reason: "the tool's command is a passthrough root, which reads every word as an argument, so its flags can't be written"}
+	}
+	argv = slices.Clone(inv.Path[:max(n-1, 0)])
+	argv = append(argv, flags...)
+	argv = append(argv, inv.Path[max(n-1, 0):]...)
+	return append(argv, escapeResponseWords(words, inv.ResponsePrefix)...), stdin, nil
+}
+
+// escapeResponseWords doubles the response-file prefix on the raw words before the first "--",
+// which a run would otherwise read as response files.
+func escapeResponseWords(words []string, prefix string) []string {
+	if prefix == "" {
+		return words
+	}
+	out := slices.Clone(words)
+	for i, w := range out {
+		if w == "--" {
+			break
+		}
+		if len(w) > len(prefix) && strings.HasPrefix(w, prefix) {
+			out[i] = prefix + w
+		}
+	}
+	return out
 }
 
 // positionals spells the arguments in order; each one given must follow only given ones.
@@ -131,6 +163,9 @@ func argumentWords(a Argument, v any) ([]string, error) {
 			s, err = compactJSON(item)
 		} else {
 			s, err = scalarText(item, "")
+		}
+		if err == nil && a.Separator != "" && a.Kind == KindList {
+			s, err = csvItem(s, a.Separator)
 		}
 		if err != nil {
 			return nil, &ArgvError{Param: a.Name, Reason: err.Error()}
@@ -178,6 +213,9 @@ func flagWords(name string, f Flag, v any) ([]string, error) {
 			return fail(errors.New("a map parameter takes an object"))
 		}
 		pairs, err := mapPairs(m, f.Type)
+		if f.DottedKeys {
+			pairs, err = dottedPairs(m)
+		}
 		if err != nil {
 			return fail(err)
 		}
@@ -214,13 +252,14 @@ func flagWords(name string, f Flag, v any) ([]string, error) {
 }
 
 // occurrences writes one attached occurrence per item. An empty list or map is "--name=" on a
-// flag with a separator, and nothing (the flag left out) on one without.
+// flag with a separator, and has no spelling on one without: leaving the flag out would bind
+// its default.
 func occurrences(name string, f Flag, items []string, split bool) ([]string, error) {
 	if len(items) == 0 {
-		if f.Separator != "" {
-			return []string{f.Flag + "="}, nil
+		if f.Separator == "" {
+			return nil, &ArgvError{Param: name, Reason: "an explicit empty list can't be written on a flag without a separator"}
 		}
-		return nil, nil
+		return []string{f.Flag + "="}, nil
 	}
 	words := make([]string, 0, len(items))
 	for _, item := range items {
@@ -295,6 +334,40 @@ func mapPairs(m map[string]any, typ string) ([]string, error) {
 		}
 		pairs = append(pairs, k+"="+s)
 	}
+	return pairs, nil
+}
+
+// dottedPairs spells a map whose nested keys the flag reads as dotted paths: one a.b=value
+// pair per leaf, sorted.
+func dottedPairs(m map[string]any) ([]string, error) {
+	var pairs []string
+	var walk func(prefix string, m map[string]any) error
+	walk = func(prefix string, m map[string]any) error {
+		for k, v := range m {
+			if k == "" || strings.ContainsAny(k, ".=") {
+				return fmt.Errorf("the key %q can't be written; dotted keys hold no \".\" or \"=\" and aren't empty", k)
+			}
+			if sub, ok := v.(map[string]any); ok {
+				if len(sub) == 0 {
+					return fmt.Errorf("the empty map under %q can't be written", prefix+k)
+				}
+				if err := walk(prefix+k+".", sub); err != nil {
+					return err
+				}
+				continue
+			}
+			s, err := anyText(prefix+k, v)
+			if err != nil {
+				return err
+			}
+			pairs = append(pairs, prefix+k+"="+s)
+		}
+		return nil
+	}
+	if err := walk("", m); err != nil {
+		return nil, err
+	}
+	slices.Sort(pairs)
 	return pairs, nil
 }
 

@@ -20,8 +20,9 @@
 // The program gets the server's environment (secrets and other env inputs come from there),
 // stdin from the call's stdin parameter and never the server's own stdin, which is the MCP
 // transport. A canceled call, or one past [WithTimeout], sends the process SIGTERM, so
-// rotini's signal handling runs, and kills it after [WithGrace]. On Windows the process is
-// killed at once. Each of stdout and stderr is capped by [WithOutputLimit].
+// rotini's signal handling runs, and kills it after [WithGrace] (at once with a grace period
+// of 0). On Windows the process is killed at once. Each of stdout and stderr is capped by
+// [WithOutputLimit].
 //
 // # Results
 //
@@ -30,5 +31,6 @@
 // text after the value, such as the default reporter's messages, goes in the result's _meta.
 // Use rotini's StructuredReporter so stdout holds only the output. A non-zero exit is an
 // error result whose text is stderr; a StructuredReporter error line on stderr becomes its
-// structured content.
+// structured content, or, for a tool with an output schema (which clients check structured
+// content against, even on an error result), its _meta["dev.rotini/error"].
 package mcp

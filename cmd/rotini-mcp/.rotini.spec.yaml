@@ -3,7 +3,7 @@ command:
   name: rotini-mcp
   summary: serve a rotini program's tools over MCP
   description: >-
-    Rotini-mcp serves the tool definitions a rotini program's tools feature writes
+    `rotini-mcp` serves the tool definitions a rotini program's tools feature writes
     (tools/mcp.json) as an MCP server on stdio, running the program for each call, and adds
     that server to MCP clients' configuration.
   footer: Use "rotini-mcp help <command>" for more information about a command.
@@ -51,7 +51,7 @@ command:
           identifiers: [--timeout]
           schema: { type: duration, default: 0s }
         - name: grace
-          summary: how long a stopped call has between SIGTERM and being killed
+          summary: how long a stopped call has between SIGTERM and being killed (0 kills it at once)
           identifiers: [--grace]
           schema: { type: duration, default: 5s }
         - name: output-limit
@@ -63,17 +63,21 @@ command:
           identifiers: [--revision]
           schema: { type: string, enum: ['2026-07-28', '2025-11-25'], default: '2026-07-28' }
     - name: config
-      summary: add the server to an MCP client's configuration
+      summary: add, remove or list servers in an MCP client's configuration
       description: >-
         Add, remove or list MCP servers in an MCP client's configuration file. A file is backed
-        up to <file>.bak before it is rewritten.
+        up to <file>.bak before it is rewritten, replacing an earlier backup. The rewrite keeps
+        every other setting, but comments are not kept.
       commands:
         - name: enable
           summary: add a server to a client's configuration
           description: >-
             Add a server to a client's configuration. With --tools and --bin, the client runs
             rotini-mcp serve for that program; with --command, it runs that command (such as a
-            program that serves its own tools).
+            program that serves its own tools). The entry names this rotini-mcp executable, so
+            run an installed rotini-mcp, not one from go run. --env values are written into the
+            client's file, which for a project's file is often committed; keep secrets out of
+            them. The file is backed up to <file>.bak, and comments in it are not kept.
           examples:
             - rotini-mcp config enable claude-desktop taskr --tools tools/mcp.json --bin ./taskr
             - rotini-mcp config enable cursor taskr --command taskr --arg mcp
@@ -90,9 +94,9 @@ command:
               identifiers: [--tools]
               schema: { type: existingfile }
             - name: bin
-              summary: the program to run for each call
+              summary: the program to run for each call; a path, or a name on PATH
               identifiers: [--bin]
-              schema: { type: existingfile }
+              schema: { type: string }
             - name: command
               summary: the command the client runs instead of rotini-mcp serve
               identifiers: [--command]
@@ -111,6 +115,9 @@ command:
               schema: { type: string, enum: [user, project] }
         - name: disable
           summary: remove a server from a client's configuration
+          description: >-
+            Remove a server from a client's configuration. The file is backed up to <file>.bak,
+            and comments in it are not kept.
           arguments:
             - name: client
               summary: the client

@@ -23,8 +23,12 @@ type run struct {
 
 // execute runs the program for a call. Canceling ctx (the client canceled the call) or the
 // timeout sends the process SIGTERM, so rotini's signal handling runs, and kills it after the
-// grace period. Stdin is the call's stdin bytes, never the server's own stdin, which is the MCP
-// transport.
+// grace period; with no grace period it is killed at once. Stdin is the call's stdin bytes, never
+// the server's own stdin, which is the MCP transport.
+//
+// A run that exits while a process it started still holds its stdout or stderr open is
+// finished once the grace period (or drainDelay) has passed: the result has the output read by
+// then and the program's own exit status.
 func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -36,6 +40,10 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	cmd := exec.CommandContext(ctx, s.exe, c.Argv...)
 	cmd.Cancel = func() error { return terminate(cmd) }
 	cmd.WaitDelay = s.cfg.grace
+	if s.cfg.grace <= 0 {
+		cmd.Cancel = func() error { return kill(cmd) }
+		cmd.WaitDelay = drainDelay
+	}
 	cmd.Env = c.Env
 	cmd.Dir = s.cfg.dir
 	cmd.Stdin = bytes.NewReader(c.Stdin)
@@ -54,6 +62,9 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	case errors.Is(cause, context.DeadlineExceeded) && s.cfg.timeout > 0:
 		r.timedOut = true
 		return r, nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil {
+		return r, nil // the program exited; a process it started kept the output open
 	}
 	if _, ok := errors.AsType[*exec.ExitError](err); err != nil && !ok {
 		if ctx.Err() != nil {
@@ -96,8 +107,20 @@ func (b *cappedBuffer) bytes() []byte {
 	return bytes.Clone(b.buf.Bytes())
 }
 
+// kill stops the process at once, for a server with no grace period.
+func kill(cmd *exec.Cmd) error {
+	if err := cmd.Process.Kill(); err != nil {
+		return fmt.Errorf("mcp: stop the program: %w", err)
+	}
+	return nil
+}
+
 // defaultGrace is how long a canceled process has to exit after SIGTERM before it is killed.
 const defaultGrace = 5 * time.Second
+
+// drainDelay is how long, with no grace period, a run's output is still read after the process
+// exits or is killed, while a process it started holds stdout or stderr open.
+const drainDelay = time.Second
 
 // defaultOutputLimit caps each of a run's stdout and stderr.
 const defaultOutputLimit = 10 << 20

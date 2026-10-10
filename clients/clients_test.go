@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -144,5 +145,50 @@ func TestErrors(t *testing.T) {
 	_ = os.WriteFile(path, nil, 0o600)
 	if _, servers, err := List(ClaudeCode, "", d); err != nil || len(servers) != 0 {
 		t.Errorf("an empty file: %v %v", servers, err)
+	}
+}
+
+func TestRewriteKeepsValues(t *testing.T) {
+	d := testDirs(t)
+	path, _ := ClaudeCode.Path("", d)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig := "{\n  // the team's servers\n  \"id\": 12345678901234567890,\n  \"ratio\": 0.1000000000000000055511151231257827,\n" +
+		"  \"mcpServers\": {\"keep\": {\"command\": \"k\", \"args\": [\"a&b\", \"<x>\"]}}, /* trailing */\n}\n"
+	if err := os.WriteFile(path, []byte(orig), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Enable(ClaudeCode, "", d, "first", Server{Command: "run&go", Env: map[string]string{"Q": "<&>"}}); err != nil {
+		t.Fatal(err)
+	}
+	afterFirst, _ := os.ReadFile(path)
+	if _, err := Enable(ClaudeCode, "", d, "second", Server{Command: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	for _, want := range []string{`"id": 12345678901234567890`, `"ratio": 0.1000000000000000055511151231257827`, `"a&b"`, `"<x>"`, `"run&go"`, `"<&>"`, `"first"`, `"second"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("the file lost %s:\n%s", want, b)
+		}
+	}
+	if strings.Contains(string(b), "the team's servers") {
+		t.Error("comments are kept; the docs say they aren't")
+	}
+	if bak, _ := os.ReadFile(path + ".bak"); string(bak) != string(afterFirst) {
+		t.Errorf("the backup isn't the file before the last change:\n%s", bak)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want the file's own 0640", info.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("left a temporary file: %s", e.Name())
+		}
 	}
 }

@@ -3,12 +3,19 @@ command:
   name: taskr
   summary: keep a list of tasks
   env_prefix: TASKR
+  response_files: { prefix: "+" }
   flags:
     - name: verbose
       summary: say more
       identifiers: [-v, --verbose]
       cascading: true
       schema: { type: count }
+    - name: json
+      summary: print JSON
+      identifiers: [--json]
+      cascading: true
+      role: machine-output
+      schema: { type: bool }
   commands:
     - name: add
       summary: add a task
@@ -88,6 +95,26 @@ command:
         required: [argv]
         properties:
           argv: { type: '[]string' }
+          json: { type: bool }
+          verbose: { type: int }
+    - name: conf
+      summary: set settings
+      effects: { kind: write }
+      arguments:
+        - name: keys
+          summary: the keys to touch, comma-separated
+          schema: { type: '[]string', separator: ',' }
+      flags:
+        - name: set
+          summary: settings to set, with dotted keys
+          identifiers: [--set]
+          schema: { type: map, dotted_keys: true }
+      output:
+        type: object
+        required: [keys, set]
+        properties:
+          keys: { type: '[]string' }
+          set: { type: object }
     - name: fail
       summary: fail on purpose
       effects: { kind: read }

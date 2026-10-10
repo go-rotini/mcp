@@ -74,9 +74,9 @@ func serverEntry(dir string, f RotiniMcpConfigEnableFlags) (clients.Server, erro
 	if err != nil {
 		return clients.Server{}, fmt.Errorf("resolve --tools: %w", err)
 	}
-	bin, err := filepath.Abs(underDir(dir, f.Bin))
+	bin, err := program(dir, f.Bin)
 	if err != nil {
-		return clients.Server{}, fmt.Errorf("resolve --bin: %w", err)
+		return clients.Server{}, err
 	}
 	return clients.Server{Command: self, Args: []string{"serve", "--tools", tools, "--bin", bin}, Env: env}, nil
 }

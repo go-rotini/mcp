@@ -14,13 +14,13 @@ command line and run as a child process; what the program prints becomes the res
 - Two ways to serve: the `rotini-mcp` command serves a tools file for any built program, and a
   program can serve its own tools from a command it declares (`taskr mcp`)
 - Command lines built the way rotini reads them: attached `--flag=value`, lists and maps by
-  repeating the flag, counts by repeating, `--no-flag` for false, `--` before positionals so a
-  value that looks like a flag stays a value, `@@` for a literal `@` on a parameter that reads
-  `@file`
+  repeating the flag, counts by repeating, `--no-flag` for false on a negatable bool (else
+  `--flag=false`), `--` before positionals so a value that looks like a flag stays a value, `@@`
+  for a literal `@` on a parameter that reads `@file`
 - Arguments validated against the input schema (JSON Schema 2020-12) before anything runs;
   output checked against the output schema
 - Structured results: stdout as `structuredContent` (an array for a streaming command), and a
-  `StructuredReporter` error line on stderr as the structured content of an error result
+  `StructuredReporter` error line on stderr with an error result
 - Safe runs: secrets refused on the command line, the server's stdin never passed on, SIGTERM
   on cancel or timeout so the program's signal handling runs, capped output
 - MCP revision 2026-07-28, with 2025-11-25 for older clients
@@ -67,7 +67,7 @@ rotini-mcp serve --tools tools/mcp.json --bin ./taskr
 | `--env KEY=value` | | add a variable to the program's environment (repeatable) |
 | `--tool NAME` | every tool | serve only these tools (repeatable) |
 | `--timeout` | `0s` (none) | stop a call that runs longer |
-| `--grace` | `5s` | time between SIGTERM and kill for a stopped call |
+| `--grace` | `5s` | time between SIGTERM and kill for a stopped call (`0` kills it at once) |
 | `--output-limit` | `10Mi` | the most a call may write on each of stdout and stderr |
 | `--revision` | `2026-07-28` | the MCP revision to serve for (`2025-11-25` for older clients) |
 
@@ -81,7 +81,11 @@ rotini-mcp config disable vscode taskr
 ```
 
 Clients: `claude-desktop`, `claude-code` (the project's `.mcp.json`), `cursor` and `vscode`
-(`--scope user` or `project`). A file is backed up to `<file>.bak` before it is rewritten.
+(`--scope user` or `project`). A file is backed up to `<file>.bak` before it is rewritten,
+replacing an earlier backup; the rewrite keeps every other setting, but comments are not kept.
+`--env` values are written into the file, and a project's file is often committed, so keep
+secrets out of them. The entry names the `rotini-mcp` executable that wrote it, so run an
+installed one, not one from `go run`.
 
 ## Serving from the program itself
 
@@ -118,18 +122,27 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
   runs. A `null` parameter counts as left out.
 - **The command line** is the command's path, the tool's fixed flags (such as `--format=json`
   from the machine-output role), one attached occurrence per flag value in parameter-name order,
-  then `--` and the positionals (a passthrough command's words follow its path with no `--`). A
-  count of 0 writes nothing, so it is refused on a count flag with a default. A secret parameter
-  is refused: supply secrets through the server's environment, which each run gets.
+  then `--` and the positionals. A passthrough command reads every word after its name as typed,
+  so its flags come before its name and its words follow it with no `--`; when the program reads
+  response files, a word starting with the prefix has it doubled. A count of 0 writes nothing,
+  so it is refused on a count flag with a default, and an empty list or map has no spelling on
+  a flag without a separator, so it is refused too. A secret parameter is refused: supply
+  secrets through the server's environment, which each run gets.
 - **Stdin** is the `stdin` parameter for a command that reads stdin, and empty otherwise.
 - **A zero exit** is a success. With an output schema, stdout's JSON is the structured content
   and its text; text after it (such as the default reporter's messages) goes in the result's
   `_meta["dev.rotini/trailing_stdout"]`. Use rotini's `StructuredReporter` so stdout holds only
   the output. Without an output schema, stdout is the text.
 - **A non-zero exit** is an error result: its text is stderr, and a `StructuredReporter` error
-  line on stderr is its structured content. `_meta["dev.rotini/exit_code"]` has the exit code.
+  line on stderr is its structured content. A tool with an output schema puts the error line in
+  `_meta["dev.rotini/error"]` instead, since clients check structured content against the output
+  schema even on an error result. `_meta["dev.rotini/exit_code"]` has the exit code.
 - **A canceled call** or one past the timeout sends the program SIGTERM and kills it after the
-  grace period. Windows can't send SIGTERM, so there the program is killed at once.
+  grace period (at once with a grace period of 0). Windows can't send SIGTERM, so there the
+  program is killed at once.
+- **A background process** the program started that keeps its stdout or stderr open doesn't
+  hold the call: once the program exits, the result has the output read within the grace period
+  (a second with a grace period of 0) and the program's exit status.
 
 ## Library options
 
@@ -137,7 +150,7 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
 |---|---|
 | `WithExecutable(path)` | the program to run (default: the running program) |
 | `WithEnv(env)` / `WithDir(dir)` | each run's environment and directory (default: the server's) |
-| `WithTimeout(d)` / `WithGrace(d)` | stop long runs; time between SIGTERM and kill |
+| `WithTimeout(d)` / `WithGrace(d)` | stop long runs; time between SIGTERM and kill (0: kill at once) |
 | `WithOutputLimit(n)` | cap each of stdout and stderr per run |
 | `WithStdio(in, out)` | serve on these streams instead of the process's stdin and stdout |
 | `WithSelector(fn)` / `WithParameterSelector(fn)` | serve only some tools or parameters |

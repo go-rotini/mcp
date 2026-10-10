@@ -60,6 +60,17 @@
       "_meta": {"dev.rotini/invoke": {"path": ["fail"]}}
     },
     {
+      "name": "fake_fail_typed",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "outputSchema": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+      "_meta": {"dev.rotini/invoke": {"path": ["fail"]}}
+    },
+    {
+      "name": "fake_orphan",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "_meta": {"dev.rotini/invoke": {"path": ["orphan"]}}
+    },
+    {
       "name": "fake_sleep",
       "inputSchema": {"type": "object", "additionalProperties": false},
       "_meta": {"dev.rotini/invoke": {"path": ["sleep"]}}
