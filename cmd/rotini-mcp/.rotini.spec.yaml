@@ -1,4 +1,4 @@
-version: 0.0.0
+version: 1.4.0
 command:
   name: rotini-mcp
   summary: serve a rotini program's tools over MCP
