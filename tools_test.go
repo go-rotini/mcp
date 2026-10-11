@@ -30,6 +30,25 @@ func TestParseTools_taskr(t *testing.T) {
 	}
 }
 
+func TestParseTools_facts(t *testing.T) {
+	tools, err := ParseTools(fakeDoc(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var echo Invoke
+	for _, tl := range tools {
+		if tl.Name == "fake_echo" {
+			echo = tl.Invoke
+		}
+	}
+	if !echo.Flags["level"].HasDefault || echo.Flags["n"].HasDefault {
+		t.Errorf("has_default not read: %+v", echo.Flags)
+	}
+	if got := echo.Flags["note"].From; len(got) != 2 || got[1] != "file" {
+		t.Errorf("from = %v", got)
+	}
+}
+
 func TestWrapOutput(t *testing.T) {
 	cases := []struct {
 		name, schema, want string

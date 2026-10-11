@@ -95,6 +95,8 @@ func TestArgv_rules(t *testing.T) {
 			"plain": {Flag: "--plain", Kind: KindList, Type: "[]string"},
 			"key":   {Flag: "--key", Kind: KindScalar, Type: "string", Secret: true},
 			"argf":  {Flag: "--argf", Kind: KindScalar, Type: "float64"},
+			"v":     {Flag: "-v", Kind: KindCount, Type: "count"},
+			"level": {Flag: "--level", Kind: KindCount, Type: "count", HasDefault: true},
 		},
 	}
 	ok := []struct {
@@ -103,7 +105,6 @@ func TestArgv_rules(t *testing.T) {
 	}{
 		{`{"csv":["a","b,c","say \"hi\""]}`, []string{"run", `--csv=a`, `--csv="b,c"`, `--csv="say ""hi"""`}},
 		{`{"csv":[]}`, []string{"run", "--csv="}},
-		{`{"plain":[]}`, []string{"run"}},
 		{`{"in":"@file.txt"}`, []string{"run", "--in=@@file.txt"}},
 		{`{"n":3.0}`, []string{"run", "--n=3"}},
 		{`{"n":12345678901234567890}`, []string{"run", "--n=12345678901234567890"}},
@@ -113,6 +114,11 @@ func TestArgv_rules(t *testing.T) {
 		{`{"objs":[{"a":1},{"a":"<b>"}]}`, []string{"run", `--objs={"a":1}`, `--objs={"a":"<b>"}`}},
 		{`{"first":"--help","rest":["-x","y"]}`, []string{"run", "--", "--help", "-x", "y"}},
 		{`{"first":"only","rest":[]}`, []string{"run", "--", "only"}},
+		{`{"first":"@x","rest":["-"]}`, []string{"run", "--", "@x", "-"}},
+		{`{"v":0}`, []string{"run"}},
+		{`{"v":2}`, []string{"run", "-v", "-v"}},
+		{`{"level":2}`, []string{"run", "--level", "--level"}},
+		{`{"level":null}`, []string{"run"}},
 	}
 	for _, tc := range ok {
 		t.Run(tc.args, func(t *testing.T) {
@@ -130,12 +136,18 @@ func TestArgv_rules(t *testing.T) {
 	}{
 		{`{"bogus":1}`, "bogus", "no such parameter"},
 		{`{"key":"s3cret"}`, "key", "secret"},
+		{`{"key":"s3cret"}`, "key", "server's environment"},
+		{`{"level":0}`, "level", "default"},
+		{`{"v":-1}`, "v", "at least 0"},
 		{`{"in":"-"}`, "in", "reads stdin"},
 		{`{"rest":["x"]}`, "rest", "left out"},
 		{`{"n":2.5}`, "n", "whole number"},
 		{`{"meta":{"a":"true"}}`, "meta", "read back"},
 		{`{"meta":{"a=b":"c"}}`, "meta", "key"},
 		{`{"meta":{"a":{"nested":1}}}`, "meta", "free-form"},
+		{`{"plain":[]}`, "plain", "an explicit empty list can't be written on a flag without a separator"},
+		{`{"meta":{}}`, "meta", "an explicit empty list can't be written on a flag without a separator"},
+		{`{"objs":[]}`, "objs", "without a separator"},
 		{`{"csv":["a\rb"]}`, "csv", "carriage return"},
 		{`{"csv":"notalist"}`, "csv", "array"},
 	}
@@ -155,17 +167,143 @@ func TestArgv_rules(t *testing.T) {
 
 func TestArgv_passthrough(t *testing.T) {
 	whole := Invoke{Path: []string{"exec"}, Passthrough: true, Arguments: []Argument{{Name: "argv", Kind: KindList, Variadic: true}}}
-	argv, _, err := whole.Argv(jsonArgs(t, `{"argv":["ls","-la"]}`))
-	if err != nil || !slices.Equal(argv, []string{"exec", "ls", "-la"}) {
+	argv, _, err := whole.Argv(jsonArgs(t, `{"argv":["ls","-la","--"]}`))
+	if err != nil || !slices.Equal(argv, []string{"exec", "ls", "-la", "--"}) {
 		t.Errorf("command passthrough: argv = %q, %v", argv, err)
 	}
-	partial := Invoke{Path: []string{"run"}, Passthrough: true, Arguments: []Argument{
+	// The fixed and inherited flags go before the passthrough command's name, where the parser
+	// still reads flags.
+	nested := Invoke{
+		Path:        []string{"tools", "exec"},
+		Passthrough: true,
+		Fixed:       []string{"--json"},
+		Flags:       map[string]Flag{"verbose": {Flag: "-v", Kind: KindCount, Type: "count"}},
+		Arguments:   []Argument{{Name: "argv", Kind: KindList, Variadic: true}},
+	}
+	argv, _, err = nested.Argv(jsonArgs(t, `{"verbose":2,"argv":["ls","--json"]}`))
+	if want := []string{"tools", "--json", "-v", "-v", "exec", "ls", "--json"}; err != nil || !slices.Equal(argv, want) {
+		t.Errorf("passthrough flags: argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	argv, _, err = nested.Argv(jsonArgs(t, `{}`))
+	if want := []string{"tools", "--json", "exec"}; err != nil || !slices.Equal(argv, want) {
+		t.Errorf("passthrough with no words: argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	root := Invoke{Path: []string{}, Passthrough: true, Fixed: []string{"--json"}, Arguments: whole.Arguments}
+	if _, _, err := root.Argv(jsonArgs(t, `{"argv":["x"]}`)); err == nil {
+		t.Error("a passthrough root's fixed flag was written as a raw word")
+	}
+	root.Fixed = nil
+	if argv, _, err := root.Argv(jsonArgs(t, `{"argv":["x"]}`)); err != nil || !slices.Equal(argv, []string{"x"}) {
+		t.Errorf("passthrough root: argv = %q, %v", argv, err)
+	}
+	// With response files on, a raw word starting with the prefix has it doubled up to the
+	// first "--"; after it the program reads words as typed.
+	resp := whole
+	resp.ResponsePrefix = "@"
+	argv, _, err = resp.Argv(jsonArgs(t, `{"argv":["@/etc/hosts","@","x@y","--","@after"]}`))
+	if want := []string{"exec", "@@/etc/hosts", "@", "x@y", "--", "@after"}; err != nil || !slices.Equal(argv, want) {
+		t.Errorf("response prefix: argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	partial := Invoke{Path: []string{"run"}, Arguments: []Argument{
 		{Name: "script", Kind: KindScalar},
 		{Name: "args", Kind: KindList, Variadic: true, Passthrough: true},
 	}}
 	argv, _, err = partial.Argv(jsonArgs(t, `{"script":"s.sh","args":["-v","x"]}`))
 	if err != nil || !slices.Equal(argv, []string{"run", "--", "s.sh", "-v", "x"}) {
-		t.Errorf("partial passthrough: argv = %q, %v", argv, err)
+		t.Errorf("passthrough argument: argv = %q, %v", argv, err)
+	}
+	only := Invoke{Path: []string{"run"}, Arguments: []Argument{{Name: "args", Kind: KindList, Variadic: true, Passthrough: true}}}
+	argv, _, err = only.Argv(jsonArgs(t, `{"args":["-x"]}`))
+	if err != nil || !slices.Equal(argv, []string{"run", "--", "-x"}) {
+		t.Errorf("first word of a passthrough argument: argv = %q, %v", argv, err)
+	}
+}
+
+func TestArgv_argumentSeparator(t *testing.T) {
+	inv := Invoke{Path: []string{"tag"}, Arguments: []Argument{{Name: "items", Kind: KindList, Variadic: true, Separator: ","}}}
+	argv, _, err := inv.Argv(jsonArgs(t, `{"items":["a","b,c","say \"hi\"",""," lead"]}`))
+	want := []string{"tag", "--", "a", `"b,c"`, `"say ""hi"""`, `""`, `" lead"`}
+	if err != nil || !slices.Equal(argv, want) {
+		t.Errorf("argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	// A separator is taken literally, the NUL character too.
+	nul := Invoke{
+		Path:      []string{"tag"},
+		Arguments: []Argument{{Name: "items", Kind: KindList, Variadic: true, Separator: "\x00"}},
+		Flags:     map[string]Flag{"f": {Flag: "--f", Kind: KindList, Type: "[]string", Separator: "\x00"}},
+	}
+	argv, _, err = nul.Argv(jsonArgs(t, `{"items":["a,b","nul"],"f":["x,y",""]}`))
+	want = []string{"tag", "--f=x,y", `--f=""`, "--", "a,b", "nul"}
+	if err != nil || !slices.Equal(argv, want) {
+		t.Errorf("NUL separator: argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	_, _, err = inv.Argv(jsonArgs(t, `{"items":["a\rb"]}`))
+	if ae, ok := errors.AsType[*ArgvError](err); !ok || ae.Param != "items" || !strings.Contains(ae.Reason, "carriage return") {
+		t.Errorf("err = %v, want a carriage-return refusal", err)
+	}
+}
+
+func TestArgv_dottedKeys(t *testing.T) {
+	inv := Invoke{Path: []string{"set"}, Flags: map[string]Flag{
+		"set": {Flag: "--set", Kind: KindMap, Type: "map[string]any", DottedKeys: true},
+		"csv": {Flag: "--csv", Kind: KindMap, Type: "map[string]any", DottedKeys: true, Separator: ","},
+	}}
+	argv, _, err := inv.Argv(jsonArgs(t, `{"set":{"db":{"host":"h","port":5432},"debug":true,"x":null}}`))
+	want := []string{"set", "--set=db.host=h", "--set=db.port=5432", "--set=debug=true", "--set=x=null"}
+	if err != nil || !slices.Equal(argv, want) {
+		t.Errorf("argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	argv, _, err = inv.Argv(jsonArgs(t, `{"csv":{"a":{"b":"x,y"}}}`))
+	if want := []string{"set", `--csv="a.b=x,y"`}; err != nil || !slices.Equal(argv, want) {
+		t.Errorf("argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	for _, tc := range []struct{ args, reason string }{
+		{`{"set":{"a.b":"x"}}`, `hold no "." or "="`},
+		{`{"set":{"a":{"b=c":"x"}}}`, `hold no "." or "="`},
+		{`{"set":{"a":{"":"x"}}}`, "aren't empty"},
+		{`{"set":{"a":{}}}`, `the empty map under "a"`},
+		{`{"set":{"a":{"b":"true"}}}`, "read back"},
+		{`{"set":{"a":[1]}}`, "free-form"},
+		{`{"set":{}}`, "without a separator"},
+	} {
+		_, _, err := inv.Argv(jsonArgs(t, tc.args))
+		if ae, ok := errors.AsType[*ArgvError](err); !ok || ae.Param != "set" || !strings.Contains(ae.Reason, tc.reason) {
+			t.Errorf("%s: err = %v, want an ArgvError mentioning %q", tc.args, err, tc.reason)
+		}
+	}
+}
+
+func TestArgv_fromFile(t *testing.T) {
+	inv := Invoke{
+		Path: []string{"cat"},
+		Arguments: []Argument{
+			{Name: "src", Kind: KindScalar, From: []string{"value", "file"}},
+			{Name: "rest", Kind: KindList, Variadic: true, From: []string{"stdin"}},
+		},
+		Flags: map[string]Flag{
+			"tag":  {Flag: "--tag", Kind: KindList, Type: "[]string", Separator: ",", From: []string{"file"}},
+			"name": {Flag: "--name", Kind: KindScalar, Type: "string"},
+		},
+	}
+	argv, _, err := inv.Argv(jsonArgs(t, `{"src":"@a","rest":["@b"],"tag":["@c","d"],"name":"@e"}`))
+	want := []string{"cat", "--name=@e", "--tag=@@c", "--tag=d", "--", "@@a", "@b"}
+	if err != nil || !slices.Equal(argv, want) {
+		t.Errorf("argv = %q, %v\nwant   %q", argv, err, want)
+	}
+	if _, _, err := inv.Argv(jsonArgs(t, `{"src":"x","rest":["-"]}`)); err == nil {
+		t.Error(`"-" on an argument that reads stdin was written`)
+	}
+	if argv, _, err := inv.Argv(jsonArgs(t, `{"src":"-"}`)); err != nil || !slices.Equal(argv, []string{"cat", "--", "-"}) {
+		t.Errorf(`"-" without from stdin: argv = %q, %v`, argv, err)
+	}
+}
+
+func TestArgv_secretArgument(t *testing.T) {
+	inv := Invoke{Path: []string{"login"}, Arguments: []Argument{{Name: "token", Kind: KindScalar, Secret: true}}}
+	_, _, err := inv.Argv(jsonArgs(t, `{"token":"s3cret"}`))
+	ae, ok := errors.AsType[*ArgvError](err)
+	if !ok || ae.Param != "token" || !strings.Contains(ae.Reason, "environment") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("err = %v, want a refusal pointing at the environment", err)
 	}
 }
 
@@ -191,6 +329,7 @@ func FuzzArgv(f *testing.F) {
 	f.Add("value", "-x", "@f")
 	f.Add("", "--", "-")
 	f.Add("a,b", "\"q\"", " lead")
+	f.Add("@@x", "@y", "@z")
 	inv := Invoke{
 		Path:      []string{"cmd"},
 		Arguments: []Argument{{Name: "pos", Kind: KindScalar}},

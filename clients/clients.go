@@ -2,7 +2,9 @@
 // clients: Claude Desktop, Claude Code, Cursor and VS Code.
 //
 // A file is changed only when asked. Before an existing file is rewritten it is copied to
-// <file>.bak; the rewrite keeps every other key but not comments.
+// <file>.bak, replacing an earlier backup, so the backup is the file before the last change.
+// The rewrite keeps every other key and numbers as written, but not comments, and replaces the
+// file in one step, keeping its mode.
 package clients
 
 import (
@@ -217,6 +219,7 @@ func (d Dirs) resolve() (Dirs, error) {
 }
 
 // read loads a configuration file (JSON with comments allowed); a missing file is empty.
+// Numbers are kept as written.
 func read(path string) (doc map[string]any, exists bool, err error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -232,7 +235,9 @@ func read(path string) (doc map[string]any, exists bool, err error) {
 	if err != nil {
 		return nil, true, fmt.Errorf("clients: %s isn't JSON: %w", path, err)
 	}
-	if err := json.Unmarshal(plain, &doc); err != nil || doc == nil {
+	dec := json.NewDecoder(bytes.NewReader(plain))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil || doc == nil {
 		return nil, true, fmt.Errorf("clients: %s isn't a JSON object", path)
 	}
 	return doc, true, nil
@@ -250,13 +255,24 @@ func serversOf(doc map[string]any, key, path string) (map[string]any, error) {
 	return servers, nil
 }
 
-// write saves a configuration file, first copying an existing one to <file>.bak.
+// write saves a configuration file, first copying an existing one to <file>.bak (replacing an
+// earlier backup). The new file is written beside it and renamed over it, keeping its mode, so
+// a failed write leaves the file as it was.
 func write(path string, doc map[string]any, exists bool) error {
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
+	mode := os.FileMode(0o600)
 	if exists {
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("clients: %w", err)
+		}
+		mode = info.Mode().Perm()
 		old, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("clients: %w", err)
@@ -265,11 +281,22 @@ func write(path string, doc map[string]any, exists bool) error {
 			return fmt.Errorf("clients: back up %s: %w", path, err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return fmt.Errorf("clients: %w", err)
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // gone after the rename; cleans up after a failure
+	_, err = tmp.Write(buf.Bytes())
+	err = errors.Join(err, tmp.Chmod(mode), tmp.Close())
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		return fmt.Errorf("clients: write %s: %w", path, err)
 	}
 	return nil
 }

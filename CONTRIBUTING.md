@@ -39,6 +39,33 @@ make test-race         # run tests with race detector
 
 `go test -short ./...` skips the end-to-end test.
 
+### Against an unreleased rotini
+
+This module reads what rotini's generator writes, so a change often needs a rotini that isn't
+released yet. With rotini checked out beside this repository, add a `go.work` (git ignores
+it) that replaces the version `go.mod` requires:
+
+```
+go 1.27
+
+use .
+
+replace github.com/go-rotini/rotini <version> => ../rotini
+```
+
+Use `replace` rather than `use ../rotini`: the end-to-end test builds a program against the
+rotini this module resolves, and finds a local checkout through the replacement. The mutation
+test copies the module elsewhere, so it can't run under a `go.work`.
+
+To regenerate `rotini-mcp` with that rotini, build its companion and run it where
+`go generate` would:
+
+```bash
+go -C ../rotini build -o "$PWD/rotini.local" ./cmd/rotini
+(cd cmd/rotini-mcp && ../../rotini.local generate ./.rotini.spec.yaml --config ./.rotini.conf.yaml)
+rm rotini.local
+```
+
 ## Pull Requests
 
 - Keep PRs focused on a single change.

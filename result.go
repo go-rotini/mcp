@@ -16,6 +16,7 @@ const (
 	metaExitCode = "dev.rotini/exit_code"
 	metaStderr   = "dev.rotini/stderr"
 	metaTrailing = "dev.rotini/trailing_stdout"
+	metaError    = "dev.rotini/error"
 )
 
 // errorSchemaVersion is the StructuredReporter line version this module reads.
@@ -27,7 +28,8 @@ const errorSchemaVersion = 1
 // value, or one per line for a stream), checked against the schema, with its JSON as the text;
 // text after the value (the default reporter's messages) goes in _meta. Without one, stdout is
 // the text. A non-zero exit is an error: the text is stderr, and a StructuredReporter error line
-// on stderr is the structured content.
+// on stderr is the structured content, or with an output schema (which clients check structured
+// content against, even on an error) goes in _meta.
 func (t *tool) result(r *run) *sdk.CallToolResult {
 	meta := sdk.Meta{metaExitCode: r.code}
 	switch {
@@ -74,8 +76,12 @@ func (t *tool) failure(meta sdk.Meta, r *run) *sdk.CallToolResult {
 		text = fmt.Sprintf("the command exited with code %d", r.code)
 	}
 	res := errorResult(meta, text)
-	if line := errorLine(r.stderr); line != nil {
+	switch line := errorLine(r.stderr); {
+	case line == nil:
+	case t.out == nil:
 		res.StructuredContent = line
+	default:
+		meta[metaError] = line
 	}
 	return res
 }

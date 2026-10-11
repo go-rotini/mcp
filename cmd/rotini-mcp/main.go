@@ -20,7 +20,7 @@ func main() {
 			version = info.Main.Version
 		}
 	}
-	cmd.NewProgram(cmd.Handlers()).
+	cmd.NewProgram().
 		WithVersion(version).
 		Execute()
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -80,18 +81,37 @@ func underDir(dir, path string) string {
 // program resolves the program to run: a path (anything with a separator) against the run's
 // directory, a bare name on PATH.
 func program(dir, bin string) (string, error) {
+	var path string
 	if strings.ContainsRune(bin, '/') || strings.ContainsRune(bin, filepath.Separator) {
 		abs, err := filepath.Abs(underDir(dir, bin))
 		if err != nil {
 			return "", fmt.Errorf("resolve --bin: %w", err)
 		}
-		return abs, nil
+		path = abs
+	} else {
+		found, err := exec.LookPath(bin)
+		if err != nil {
+			return "", fmt.Errorf("--bin %s: %w", bin, err)
+		}
+		path = found
 	}
-	path, err := exec.LookPath(bin)
-	if err != nil {
-		return "", fmt.Errorf("--bin %s: %w", bin, err)
+	if err := refuseBatchFile(runtime.GOOS, path); err != nil {
+		return "", err
 	}
 	return path, nil
+}
+
+// refuseBatchFile refuses a Windows batch file: Windows runs it through cmd.exe, which parses
+// its arguments again, so a call's values could run as commands.
+func refuseBatchFile(goos, path string) error {
+	if goos != "windows" {
+		return nil
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".bat", ".cmd":
+		return fmt.Errorf("--bin %s: a batch file runs through cmd.exe, which parses its arguments again, so a call's values could run as commands; give the program itself", path)
+	}
+	return nil
 }
 
 // knownTools refuses a --tool the tools file doesn't have.

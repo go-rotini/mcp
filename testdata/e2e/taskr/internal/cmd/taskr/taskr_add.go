@@ -31,6 +31,7 @@ func (*taskrAddHandler) Run(ctx context.Context, rtx *rotini.Context) {
 		"verbose":  in.Taskr.Flags.Verbose,
 		"label":    map[string]string{},
 		"note":     f.Note,
+		"token":    f.Token != "",
 	}
 	for k, v := range f.Label {
 		out["label"].(map[string]string)[k] = v

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -70,6 +71,14 @@ func fakeMain(args []string) int {
 	case "plain":
 		fmt.Println("hello")
 		fmt.Fprintln(os.Stderr, "a warning")
+	case "orphan":
+		// A background process that outlives the program and keeps its stdout open.
+		child := exec.Command("sleep", "10")
+		child.Stdout = os.Stdout
+		if child.Start() != nil {
+			return 2
+		}
+		fmt.Println("started")
 	default:
 		return 2
 	}
@@ -154,7 +163,7 @@ func TestServer_listTools(t *testing.T) {
 	for _, tl := range list.Tools {
 		names = append(names, tl.Name)
 	}
-	want := []string{"fake_array", "fake_badout", "fake_echo", "fake_fail", "fake_flood", "fake_plain", "fake_secret", "fake_sleep", "fake_stream"}
+	want := []string{"fake_array", "fake_badout", "fake_echo", "fake_fail", "fake_fail_typed", "fake_flood", "fake_orphan", "fake_plain", "fake_secret", "fake_sleep", "fake_stream"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v (sorted by name)", names, want)
 	}
@@ -207,6 +216,22 @@ func TestServer_nullAndMissing(t *testing.T) {
 	argv, _ := structured(t, res)["argv"].([]any)
 	if fmt.Sprint(argv) != "[--json]" {
 		t.Errorf("argv = %q, want only the fixed flag", argv)
+	}
+}
+
+func TestServer_countOverDefault(t *testing.T) {
+	cs := connect(t, fakeDoc(t))
+	res := call(t, cs, "fake_echo", map[string]any{"level": 2, "n": 0})
+	if res.IsError {
+		t.Fatalf("error result: %s", text(res))
+	}
+	argv, _ := structured(t, res)["argv"].([]any)
+	if fmt.Sprint(argv) != "[--json --level --level]" {
+		t.Errorf("argv = %q", argv)
+	}
+	res = call(t, cs, "fake_echo", map[string]any{"level": 0})
+	if !res.IsError || !strings.Contains(text(res), "default") {
+		t.Fatalf("want a refusal of 0 over the default, got %s", text(res))
 	}
 }
 
@@ -270,6 +295,38 @@ func TestServer_failure(t *testing.T) {
 	}
 }
 
+// With an output schema, the error line goes in _meta: clients check structured content against
+// the output schema even on an error result.
+func TestServer_failureWithOutputSchema(t *testing.T) {
+	cs := connect(t, fakeDoc(t))
+	res := call(t, cs, "fake_fail_typed", nil)
+	if !res.IsError || res.StructuredContent != nil {
+		t.Fatalf("want an error result without structured content, got %v %v", res.IsError, res.StructuredContent)
+	}
+	if !strings.Contains(text(res), "Error: boom") {
+		t.Errorf("text = %q, want stderr", text(res))
+	}
+	line, _ := res.Meta[metaError].(map[string]any)
+	if e, _ := line["error"].(map[string]any); e["message"] != "boom" {
+		t.Errorf("_meta[%q] = %v, want the error line", metaError, res.Meta[metaError])
+	}
+}
+
+func TestServer_backgroundChildHoldsOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sleep(1)")
+	}
+	for _, grace := range []time.Duration{300 * time.Millisecond, 0} {
+		t.Run(grace.String(), func(t *testing.T) {
+			cs := connect(t, fakeDoc(t), WithGrace(grace))
+			res := call(t, cs, "fake_orphan", nil)
+			if res.IsError || text(res) != "started\n" || fmt.Sprint(res.Meta[metaExitCode]) != "0" {
+				t.Fatalf("got %v %q, exit code %v; want the program's output and exit status", res.IsError, text(res), res.Meta[metaExitCode])
+			}
+		})
+	}
+}
+
 func TestServer_outputMismatch(t *testing.T) {
 	cs := connect(t, fakeDoc(t))
 	res := call(t, cs, "fake_badout", nil)
@@ -312,6 +369,24 @@ func TestServer_timeoutSendsSIGTERM(t *testing.T) {
 	b, err := os.ReadFile(marker)
 	if err != nil || string(b) != "TERM" {
 		t.Fatalf("the program didn't see SIGTERM: %q %v", b, err)
+	}
+}
+
+func TestServer_timeoutWithoutGraceKills(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "signal")
+	exe, _ := os.Executable()
+	cs := connect(t, fakeDoc(t), WithTimeout(500*time.Millisecond), WithGrace(0),
+		WithEnv(append(os.Environ(), fakeEnv+"=1", "FAKE_SIGNAL_FILE="+marker)), WithExecutable(exe))
+	start := time.Now()
+	res := call(t, cs, "fake_sleep", nil)
+	if !res.IsError || !strings.Contains(text(res), "timeout") {
+		t.Fatalf("want a timeout error, got %s", text(res))
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("the run took %s to stop", took)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the program got SIGTERM; with no grace period it is killed")
 	}
 }
 

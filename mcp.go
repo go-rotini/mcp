@@ -79,7 +79,8 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *config) { c.timeout = d }
 }
 
-// WithGrace sets how long a stopped run has between SIGTERM and being killed (default 5s).
+// WithGrace sets how long a stopped run has between SIGTERM and being killed (default 5s). Zero
+// or less kills a stopped run at once, with no SIGTERM.
 func WithGrace(d time.Duration) Option {
 	return func(c *config) { c.grace = d }
 }

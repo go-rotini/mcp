@@ -18,7 +18,7 @@ import (
 func runCLI(t *testing.T, dir string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code, _ = NewProgram(Handlers()).
+	code, _ = NewProgram().
 		WithDir(dir).
 		WithStdout(&out).
 		WithStderr(&errOut).
@@ -72,7 +72,7 @@ func TestConfig_serveServer(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	code, _, errOut := runCLI(t, dir, "config", "enable", "cursor", "taskr", "--scope", "project", "--tools", "mcp.json", "--bin", "taskr")
+	code, _, errOut := runCLI(t, dir, "config", "enable", "cursor", "taskr", "--scope", "project", "--tools", "mcp.json", "--bin", "./taskr")
 	if code != 0 {
 		t.Fatalf("enable: %d %q", code, errOut)
 	}
@@ -80,6 +80,51 @@ func TestConfig_serveServer(t *testing.T) {
 	want := " serve --tools " + filepath.Join(dir, "mcp.json") + " --bin " + filepath.Join(dir, "taskr") + "\n"
 	if code != 0 || !strings.HasPrefix(out, "taskr\t") || !strings.HasSuffix(out, want) {
 		t.Fatalf("list: %d %q, want it to end %q", code, out, want)
+	}
+}
+
+// A bare --bin is a name on PATH, as for serve.
+func TestConfig_serveServerBinOnPath(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcp.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut := runCLI(t, dir, "config", "enable", "claude-code", "g", "--tools", "mcp.json", "--bin", "go")
+	if code != 0 {
+		t.Fatalf("enable: %d %q", code, errOut)
+	}
+	code, out, _ := runCLI(t, dir, "config", "list", "claude-code")
+	if want := " --bin " + goBin + "\n"; code != 0 || !strings.HasSuffix(out, want) {
+		t.Fatalf("list: %d %q, want it to end %q", code, out, want)
+	}
+	code, _, errOut = runCLI(t, dir, "config", "enable", "claude-code", "g", "--tools", "mcp.json", "--bin", "no-such-program-on-path")
+	if code == 0 || !strings.Contains(errOut, "no-such-program-on-path") {
+		t.Fatalf("a missing program: %d %q", code, errOut)
+	}
+}
+
+func TestRefuseBatchFile(t *testing.T) {
+	for _, tc := range []struct {
+		goos, path string
+		refused    bool
+	}{
+		{"windows", `C:\tools\taskr.bat`, true},
+		{"windows", `C:\tools\taskr.CMD`, true},
+		{"windows", `C:\tools\taskr.exe`, false},
+		{"linux", "/usr/bin/taskr.bat", false},
+		{"darwin", "/usr/local/bin/taskr", false},
+	} {
+		err := refuseBatchFile(tc.goos, tc.path)
+		if (err != nil) != tc.refused {
+			t.Errorf("%s %s: %v, want refused %v", tc.goos, tc.path, err, tc.refused)
+		}
+		if err != nil && !strings.Contains(err.Error(), "cmd.exe") {
+			t.Errorf("%s: the error doesn't say why: %v", tc.path, err)
+		}
 	}
 }
 
@@ -124,7 +169,7 @@ func TestServe_stdio(t *testing.T) {
 	defer cancel()
 	done := make(chan int, 1)
 	go func() {
-		code, _ := NewProgram(Handlers()).
+		code, _ := NewProgram().
 			WithDir("../../..").
 			WithStdin(sr).
 			WithStdout(sw).
