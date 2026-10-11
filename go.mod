@@ -7,7 +7,7 @@ toolchain go1.27.2
 require (
 	github.com/go-rotini/jsonc v1.1.1
 	github.com/go-rotini/jsonschema v1.2.1
-	github.com/go-rotini/rotini v1.4.0
+	github.com/go-rotini/rotini v1.4.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
