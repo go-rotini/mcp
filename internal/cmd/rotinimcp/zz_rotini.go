@@ -294,9 +294,10 @@ var InputSettings = rotini.InputSettings{}
 
 // NewProgram builds the program from the generated command tree and handlers. Taking
 // ProgramHandlers makes the compiler check that every command has a handler. The switch finds
-// each command's handler without reflection, which keeps the binary small.
+// each command's handler without reflection, and the program links only the runtime features
+// the spec uses, which keeps the binary small.
 func NewProgram(handlers ProgramHandlers) *rotini.Program {
-	return rotini.NewProgramFunc(definition, func(name string) (rotini.Handler, bool) {
+	return rotini.NewWiredProgram(definition, func(name string) (rotini.Handler, bool) {
 		switch name {
 		case "RotiniMcp":
 			return handlers.RotiniMcp(), true
@@ -333,12 +334,6 @@ var _ ProgramHandlers = (*handlers)(nil)
 func Handlers() ProgramHandlers {
 	return &handlers{}
 }
-
-// Program is a program built with NewProgram(Handlers()).
-//
-// Deprecated: build the program in main with NewProgram(Handlers()). Program will be removed in a
-// later release.
-var Program = NewProgram(&handlers{})
 
 func (*handlers) RotiniMcp() rotini.Handler {
 	return &rotiniMcpHandler{}
