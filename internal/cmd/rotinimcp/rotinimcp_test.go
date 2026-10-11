@@ -18,7 +18,7 @@ import (
 func runCLI(t *testing.T, dir string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code, _ = NewProgram(Handlers()).
+	code, _ = NewProgram().
 		WithDir(dir).
 		WithStdout(&out).
 		WithStderr(&errOut).
@@ -169,7 +169,7 @@ func TestServe_stdio(t *testing.T) {
 	defer cancel()
 	done := make(chan int, 1)
 	go func() {
-		code, _ := NewProgram(Handlers()).
+		code, _ := NewProgram().
 			WithDir("../../..").
 			WithStdin(sr).
 			WithStdout(sw).

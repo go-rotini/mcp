@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	cmd.NewProgram(cmd.Handlers()).
+	cmd.NewProgram().
 		WithReporter(rotini.StructuredReporter(func(*rotini.Context) bool {
 			return os.Getenv("TASKR_JSON_ERRORS") == "1"
 		})).
