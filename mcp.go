@@ -23,10 +23,10 @@ import (
 // Argv, Stdin and Env before the program runs.
 type Call struct {
 	Tool      Tool
-	Arguments map[string]any // as the client sent them, numbers as json.Number
+	Arguments map[string]any // as the client sent them, numbers as json.Number, nulls removed
 	Argv      []string       // the command line, without the program name
-	Stdin     []byte
-	Env       []string
+	Stdin     []byte         // what the program reads on stdin
+	Env       []string       // the program's environment, KEY=value entries
 }
 
 // Handler runs a call and returns its result.
@@ -58,7 +58,7 @@ type config struct {
 }
 
 // WithExecutable runs path for each call. By default it is the running program
-// (os.Executable), so a program can serve its own tools.
+// ([os.Executable]), so a program can serve its own tools.
 func WithExecutable(path string) Option {
 	return func(c *config) { c.exe = path }
 }
@@ -133,9 +133,10 @@ func WithImplementation(name, version string) Option {
 	return func(c *config) { c.name, c.version = name, version }
 }
 
-// WithServingCommand names the command that serves the tools, by its path below the root, so a
-// tool that would run it (and start another server) is refused. Give it in the library form;
-// the serving command should also be kept from agents with `agent: false`.
+// WithServingCommand names the command that serves the tools, by its command names below the
+// root as a tool's [Invoke.Path] gives them (such as "mcp"). Serving a tool that would run it,
+// and so start another server, is an error. The serving command should also be kept from agents
+// with `agent: false`.
 func WithServingCommand(path ...string) Option {
 	return func(c *config) { c.serving = slices.Clone(path) }
 }
@@ -146,8 +147,8 @@ func WithLog(w io.Writer) Option {
 	return func(c *config) { c.logger = w }
 }
 
-// Serve serves the tools document over MCP on stdio until the client disconnects or ctx is
-// done. tools is the `tools/mcp.json` Rotini's tools feature writes, or the generated `ToolsMCP`
+// Serve serves the tools document over MCP on stdio (the process's own, or [WithStdio]'s)
+// until the client disconnects or ctx is done; a stop because ctx is done returns nil. tools is the `tools/mcp.json` Rotini's tools feature writes, or the generated `ToolsMCP`
 // string; each call runs the program with the command line its arguments make.
 //
 // In a rotini program, a command can serve the program's own tools:
@@ -181,7 +182,7 @@ func Serve(ctx context.Context, tools []byte, opts ...Option) error {
 }
 
 // NewServer builds the MCP server for a tools document, for serving over another transport
-// (sdk.Server.Run, or the SDK's HTTP handlers).
+// ([sdk.Server.Run], or the SDK's HTTP handlers). [WithStdio] has no effect on it.
 func NewServer(tools []byte, opts ...Option) (*sdk.Server, error) {
 	s, _, err := newServer(tools, opts)
 	return s, err
@@ -344,7 +345,7 @@ func (s *server) handler(t *tool) sdk.ToolHandler {
 	}
 }
 
-// moduleVersion is the main module's version, for the server's name.
+// moduleVersion is the main module's version, for the server's implementation version.
 func moduleVersion() string {
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
 		return info.Main.Version

@@ -41,37 +41,37 @@ type Tool struct {
 
 // Invoke is how a tool call becomes a command line: rotini's `_meta["dev.rotini/invoke"]`.
 type Invoke struct {
-	Path           []string        `json:"path"`
-	Arguments      []Argument      `json:"arguments,omitempty"`
-	Flags          map[string]Flag `json:"flags,omitempty"`
-	Fixed          []string        `json:"fixed,omitempty"`
-	Stdin          *Stdin          `json:"stdin,omitempty"`
-	Passthrough    bool            `json:"passthrough,omitempty"` // the command takes every word after its path as typed: no "--"
-	Stream         bool            `json:"stream,omitempty"`
-	Wrapped        bool            `json:"wrapped,omitempty"`
+	Path           []string        `json:"path"`                      // the command's names below the root
+	Arguments      []Argument      `json:"arguments,omitempty"`       // positional parameters
+	Flags          map[string]Flag `json:"flags,omitempty"`           // flag parameters, by parameter name
+	Fixed          []string        `json:"fixed,omitempty"`           // words added to every call: the machine-output flag
+	Stdin          *Stdin          `json:"stdin,omitempty"`           // the parameter read on stdin, if any
+	Passthrough    bool            `json:"passthrough,omitempty"`     // the command takes every word after its path as typed: no "--"
+	Stream         bool            `json:"stream,omitempty"`          // stdout is a stream of output values, one per line
+	Wrapped        bool            `json:"wrapped,omitempty"`         // the structured content is {"result": <stdout>}
 	ResponsePrefix string          `json:"response_prefix,omitempty"` // the program reads response files: a raw word before "--" starting with it has it doubled
 }
 
 // Argument is a positional parameter, in command-line order.
 type Argument struct {
 	Name        string   `json:"name"`
-	Kind        string   `json:"kind"`
+	Kind        string   `json:"kind"` // KindScalar, KindList, KindMap or KindObject
 	Variadic    bool     `json:"variadic,omitempty"`
 	Passthrough bool     `json:"passthrough,omitempty"` // it and every later word are taken as typed; "--" still comes first
-	Secret      bool     `json:"secret,omitempty"`
-	From        []string `json:"from,omitempty"`      // file: a leading @ reads a file; stdin: "-" reads stdin
-	Separator   string   `json:"separator,omitempty"` // each item is quoted on its own as an item of a list split on it
+	Secret      bool     `json:"secret,omitempty"`      // the value is a secret, which Argv refuses
+	From        []string `json:"from,omitempty"`        // file: a leading @ reads a file; stdin: "-" reads stdin
+	Separator   string   `json:"separator,omitempty"`   // each item is quoted on its own as an item of a list split on it
 }
 
 // Flag is how one flag parameter is written.
 type Flag struct {
-	Flag       string   `json:"flag"`
-	Kind       string   `json:"kind"`
-	Type       string   `json:"type,omitempty"`
-	Negated    string   `json:"negated,omitempty"`
-	Separator  string   `json:"separator,omitempty"`
-	Role       string   `json:"role,omitempty"`
-	Secret     bool     `json:"secret,omitempty"`
+	Flag       string   `json:"flag"`                  // the flag as written, such as --tag
+	Kind       string   `json:"kind"`                  // one of the Kind constants
+	Type       string   `json:"type,omitempty"`        // the rotini type, such as bool or []string
+	Negated    string   `json:"negated,omitempty"`     // a negatable bool's form for false, such as --no-color
+	Separator  string   `json:"separator,omitempty"`   // a list's separator, when it has one
+	Role       string   `json:"role,omitempty"`        // the flag's role (such as dry-run or confirm), when it has one
+	Secret     bool     `json:"secret,omitempty"`      // the value is a secret, which Argv refuses
 	From       []string `json:"from,omitempty"`        // file: a leading @ reads a file; stdin: "-" reads stdin
 	HasDefault bool     `json:"has_default,omitempty"` // a count with a default: leaving it out isn't 0
 	DottedKeys bool     `json:"dotted_keys,omitempty"` // a map whose nested keys are written flattened: a.b=value

@@ -116,7 +116,7 @@ func decodeOutput(stdout []byte, stream bool) (v any, trailing string, err error
 }
 
 // errorLine finds a StructuredReporter error line on stderr: a JSON object with an "error"
-// member and a schema_version this module reads (or none, as before versions were written).
+// member and either a schema_version this module reads or no schema_version.
 func errorLine(stderr []byte) map[string]any {
 	for line := range strings.Lines(string(stderr)) {
 		line = strings.TrimSpace(line)

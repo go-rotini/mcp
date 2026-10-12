@@ -14,12 +14,13 @@ import (
 )
 
 // ArgvError is a tool call no command line can express: a parameter the tool doesn't have, a
-// value its flag can't take, or a secret. Param names the parameter.
+// value its flag can't take, or a secret.
 type ArgvError struct {
-	Param  string
+	Param  string // the parameter, or "" when the problem isn't one parameter's
 	Reason string
 }
 
+// Error returns "mcp: <param>: <reason>", leaving out an empty Param.
 func (e *ArgvError) Error() string {
 	if e.Param == "" {
 		return "mcp: " + e.Reason
@@ -28,8 +29,8 @@ func (e *ArgvError) Error() string {
 }
 
 // Argv turns a tool call's arguments back into the command line that supplies them, the way
-// rotini.ArgvOf does for a typed inputs value: argv (without the program name) and the bytes
-// to write on stdin.
+// [github.com/go-rotini/rotini.ArgvOf] does for a typed inputs value: argv (without the program
+// name) and the bytes to write on stdin.
 //
 // The command's path comes first, then the fixed flags (the machine-output flag), then one
 // attached occurrence per flag value (--name=value), in parameter-name order. A list or map
@@ -38,9 +39,9 @@ func (e *ArgvError) Error() string {
 // object is JSON, a count repeats the bare flag (0 writes nothing), and a bool is its bare flag
 // for true and its negated form (or --name=false) for false. A "--" comes before the
 // positionals, so a value that looks like a flag stays a positional, also when the last
-// argument is a passthrough one; a variadic argument with a separator quotes each item on its
-// own. On a parameter whose `from` includes file, a value starting with @ is written with the @
-// doubled. A null or missing parameter is left out.
+// argument is a passthrough one; a list argument with a separator quotes each item on its own.
+// On a parameter whose `from` includes file, a value starting with @ is written with the @
+// doubled. A null or missing parameter is left out, as is an empty list for an argument.
 //
 // A passthrough command reads every word after its name as typed, so its flags (all inherited:
 // a passthrough command declares none) and the fixed flags come before its name, and its words
@@ -51,7 +52,8 @@ func (e *ArgvError) Error() string {
 // command line is visible to other users of the machine; the program reads secrets from the
 // server's environment), a count of 0 on a count flag with a default, an explicit empty list or
 // map on a flag without a separator, "-" on a parameter that reads stdin from it, an argument
-// given after one left out, and map keys or free-form values that don't read back as given.
+// given after one left out, any flag on a passthrough root command, and map keys or free-form
+// values that don't read back as given.
 func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err error) {
 	for name := range args {
 		if _, ok := inv.Flags[name]; ok {

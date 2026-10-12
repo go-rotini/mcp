@@ -30,7 +30,7 @@
 // (for a stream, one JSON value per line, as an array), checked against the output schema;
 // text after the value, such as the default reporter's messages, goes in the result's _meta.
 // Use rotini's StructuredReporter so stdout holds only the output. A non-zero exit is an
-// error result whose text is stderr; a StructuredReporter error line on stderr becomes its
+// error result whose text is stderr (stdout when stderr is empty); a StructuredReporter error line on stderr becomes its
 // structured content, or, for a tool with an output schema (which clients check structured
 // content against, even on an error result), its _meta["dev.rotini/error"].
 package mcp

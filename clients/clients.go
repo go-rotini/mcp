@@ -52,7 +52,7 @@ type Server struct {
 }
 
 // Dirs are the directories files are found under. A zero field means the default: the user's
-// home directory, the user's configuration directory (os.UserConfigDir) and the working
+// home directory, the user's configuration directory ([os.UserConfigDir]) and the working
 // directory.
 type Dirs struct {
 	Home, Config, Project string
@@ -115,7 +115,7 @@ func (c Client) serversKey() string {
 }
 
 // Enable adds (or replaces) the server called name in the client's file, creating the file if
-// it doesn't exist.
+// it doesn't exist. It returns the file's path.
 func Enable(c Client, scope Scope, dirs Dirs, name string, s Server) (path string, err error) {
 	if name == "" || s.Command == "" {
 		return "", errors.New("clients: a server needs a name and a command")
@@ -170,7 +170,8 @@ func Disable(c Client, scope Scope, dirs Dirs, name string) (path string, remove
 	return path, true, write(path, doc, exists)
 }
 
-// List reads the servers in the client's file, by name. A missing file has none.
+// List reads the servers in the client's file, by name. A missing file has none, and an entry
+// that doesn't read as a [Server] is left out.
 func List(c Client, scope Scope, dirs Dirs) (path string, servers map[string]Server, err error) {
 	path, err = c.Path(scope, dirs)
 	if err != nil {
