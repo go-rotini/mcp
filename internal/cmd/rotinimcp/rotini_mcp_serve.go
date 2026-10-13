@@ -2,6 +2,7 @@ package rotinimcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -59,6 +60,7 @@ func (*rotiniMcpServeHandler) Run(ctx context.Context, rtx *rotini.Context) {
 		mcp.WithTimeout(f.Timeout),
 		mcp.WithGrace(f.Grace),
 		mcp.WithOutputLimit(int64(f.OutputLimit)),
+		mcp.WithMaxConcurrent(f.Concurrency),
 		mcp.WithRevision(f.Revision),
 		mcp.WithLog(rtx.Stderr),
 	}
@@ -87,6 +89,9 @@ func program(dir, bin string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve --bin: %w", err)
 		}
+		if err := isFile(abs); err != nil {
+			return "", fmt.Errorf("--bin %s: %w", bin, err)
+		}
 		path = abs
 	} else {
 		found, err := exec.LookPath(bin)
@@ -110,6 +115,18 @@ func refuseBatchFile(goos, path string) error {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".bat", ".cmd":
 		return fmt.Errorf("--bin %s: a batch file runs through cmd.exe, which parses its arguments again, so a call's values could run as commands; give the program itself", path)
+	}
+	return nil
+}
+
+// isFile checks that path names a file that exists.
+func isFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return errors.New("it is a directory")
 	}
 	return nil
 }

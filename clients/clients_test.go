@@ -192,3 +192,85 @@ func TestRewriteKeepsValues(t *testing.T) {
 		}
 	}
 }
+
+// A configuration file that is a symbolic link (a dotfiles setup) keeps the link: the file it
+// links to is the one rewritten.
+func TestEnableThroughSymlink(t *testing.T) {
+	d := testDirs(t)
+	dotfiles := t.TempDir()
+	target := filepath.Join(dotfiles, "cursor-mcp.json")
+	if err := os.WriteFile(target, []byte(`{"mcpServers":{}}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	link, err := Cursor.Path(User, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("no symbolic links here: %v", err)
+	}
+	if _, err := Enable(Cursor, User, d, "taskr", Server{Command: "taskr"}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced: %v %v", info, err)
+	}
+	b, _ := os.ReadFile(target)
+	if !strings.Contains(string(b), `"taskr"`) {
+		t.Fatalf("the linked file wasn't changed:\n%s", b)
+	}
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat(target); info.Mode().Perm() != 0o640 {
+			t.Errorf("mode %v, want 0640", info.Mode().Perm())
+		}
+	}
+}
+
+// Enabling a server again keeps the entry's other settings, and the file keeps its key order.
+func TestEnableKeepsEntrySettingsAndOrder(t *testing.T) {
+	d := testDirs(t)
+	path, err := Cursor.Path(Project, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig := `{
+  // my servers
+  "zeta": 1,
+  "mcpServers": {
+    "taskr": {"command": "old", "args": ["x"], "disabled": true, "autoApprove": ["taskr_list"], "cwd": "/srv", "env": {"A": "1"},},
+    "b": {"command": "b"},
+  },
+  "alpha": 2,
+}`
+	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Enable(Cursor, Project, d, "taskr", Server{Command: "taskr", Args: []string{"mcp"}}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	got := string(b)
+	for _, want := range []string{`"disabled": true`, `"autoApprove"`, `"cwd": "/srv"`, `"A": "1"`, `"command": "taskr"`, `"mcp"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("lost %s:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `"x"`) {
+		t.Errorf("the old args were kept:\n%s", got)
+	}
+	order := []string{`"zeta"`, `"mcpServers"`, `"taskr"`, `"command"`, `"args"`, `"disabled"`, `"b"`, `"alpha"`}
+	last := -1
+	for _, k := range order {
+		i := strings.Index(got, k)
+		if i < last {
+			t.Fatalf("%s moved; want the order %v:\n%s", k, order, got)
+		}
+		last = i
+	}
+}

@@ -108,6 +108,9 @@ func TestArgv_rules(t *testing.T) {
 		{`{"in":"@file.txt"}`, []string{"run", "--in=@@file.txt"}},
 		{`{"n":3.0}`, []string{"run", "--n=3"}},
 		{`{"n":12345678901234567890}`, []string{"run", "--n=12345678901234567890"}},
+		{`{"n":18446744073709551615}`, []string{"run", "--n=18446744073709551615"}},
+		{`{"n":-9223372036854775808}`, []string{"run", "--n=-9223372036854775808"}},
+		{`{"n":1e3}`, []string{"run", "--n=1000"}},
 		{`{"argf":1e21}`, []string{"run", "--argf=1e21"}},
 		{`{"meta":{"b":true,"a":2.5,"c":"text","d":null}}`, []string{"run", "--meta=a=2.5", "--meta=b=true", "--meta=c=text", "--meta=d=null"}},
 		{`{"obj":{"host":"h","port":5432}}`, []string{"run", `--obj={"host":"h","port":5432}`}},
@@ -142,6 +145,11 @@ func TestArgv_rules(t *testing.T) {
 		{`{"in":"-"}`, "in", "reads stdin"},
 		{`{"rest":["x"]}`, "rest", "left out"},
 		{`{"n":2.5}`, "n", "whole number"},
+		{`{"n":18446744073709551616}`, "n", "out of range"},
+		{`{"n":-9223372036854775809}`, "n", "out of range"},
+		{`{"n":1e5000000}`, "n", "out of range"},
+		{`{"n":-1e300000000}`, "n", "out of range"},
+		{`{"v":1e5000000}`, "v", "whole number"},
 		{`{"meta":{"a":"true"}}`, "meta", "read back"},
 		{`{"meta":{"a=b":"c"}}`, "meta", "key"},
 		{`{"meta":{"a":{"nested":1}}}`, "meta", "free-form"},
@@ -361,4 +369,18 @@ func FuzzArgv(f *testing.F) {
 			}
 		}
 	})
+}
+
+// rotini reads a map key of only spaces as no key, so it can't be written.
+func TestArgv_blankMapKey(t *testing.T) {
+	for _, f := range []Flag{
+		{Flag: "--m", Kind: KindMap, Type: "map[string]string"},
+		{Flag: "--m", Kind: KindMap, Type: "map[string]any", DottedKeys: true},
+	} {
+		inv := Invoke{Path: []string{}, Flags: map[string]Flag{"m": f}}
+		_, _, err := inv.Argv(jsonArgs(t, `{"m":{" ":"x"}}`))
+		if _, ok := errors.AsType[*ArgvError](err); !ok {
+			t.Errorf("%+v: err = %v, want an ArgvError", f, err)
+		}
+	}
 }

@@ -201,3 +201,36 @@ func TestServe_stdio(t *testing.T) {
 		t.Errorf("serve exited %d", code)
 	}
 }
+
+// A --command or --bin path is made absolute and must exist; a project file that ends up with
+// this machine's paths gets a note.
+func TestConfig_paths(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"mcp.json", "taskr"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, _, errOut := runCLI(t, dir, "config", "enable", "claude-code", "t", "--command", "./taskr")
+	if code != 0 || !strings.Contains(errOut, "paths on this machine") {
+		t.Fatalf("enable: %d %q", code, errOut)
+	}
+	code, out, _ := runCLI(t, dir, "config", "list", "claude-code")
+	if want := "t\t" + filepath.Join(dir, "taskr") + "\n"; code != 0 || out != want {
+		t.Fatalf("list: %d %q, want %q", code, out, want)
+	}
+	code, _, errOut = runCLI(t, dir, "config", "enable", "claude-code", "bare", "--command", "taskr")
+	if code != 0 || strings.Contains(errOut, "paths on this machine") {
+		t.Fatalf("a bare command: %d %q", code, errOut)
+	}
+	for name, args := range map[string][]string{
+		"command": {"--command", "./nope"},
+		"bin":     {"--tools", "mcp.json", "--bin", "./nope"},
+		"bin dir": {"--tools", "mcp.json", "--bin", "."},
+	} {
+		code, _, errOut := runCLI(t, dir, append([]string{"config", "enable", "claude-code", "x"}, args...)...)
+		if code == 0 || !strings.Contains(errOut, "nope") && name != "bin dir" {
+			t.Errorf("%s: %d %q, want a refusal", name, code, errOut)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"math/big"
 	"slices"
 	"strconv"
@@ -53,7 +54,7 @@ func (e *ArgvError) Error() string {
 // server's environment), a count of 0 on a count flag with a default, an explicit empty list or
 // map on a flag without a separator, "-" on a parameter that reads stdin from it, an argument
 // given after one left out, any flag on a passthrough root command, and map keys or free-form
-// values that don't read back as given.
+// values that don't read back as given, and a NUL byte in any value but stdin's.
 func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err error) {
 	for name := range args {
 		if _, ok := inv.Flags[name]; ok {
@@ -66,6 +67,11 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 			continue
 		}
 		return nil, nil, &ArgvError{Param: name, Reason: "the tool has no such parameter"}
+	}
+	for _, name := range slices.Sorted(maps.Keys(args)) {
+		if (inv.Stdin == nil || name != inv.Stdin.Param) && holdsNUL(args[name]) {
+			return nil, nil, &ArgvError{Param: name, Reason: "the value holds a NUL byte, which a command line can't carry"}
+		}
 	}
 	flags := slices.Clone(inv.Fixed)
 	for _, name := range slices.Sorted(maps.Keys(inv.Flags)) {
@@ -105,6 +111,23 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 	argv = append(argv, flags...)
 	argv = append(argv, inv.Path[max(n-1, 0):]...)
 	return append(argv, escapeResponseWords(words, inv.ResponsePrefix)...), stdin, nil
+}
+
+// holdsNUL reports whether a JSON value holds a NUL byte in any string or object key.
+func holdsNUL(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.IndexByte(t, 0) >= 0
+	case []any:
+		return slices.ContainsFunc(t, holdsNUL)
+	case map[string]any:
+		for k, e := range t {
+			if strings.IndexByte(k, 0) >= 0 || holdsNUL(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // escapeResponseWords doubles the response-file prefix on the raw words before the first "--",
@@ -321,8 +344,8 @@ func mapPairs(m map[string]any, typ string) ([]string, error) {
 	freeForm := typ == "" || strings.HasSuffix(typ, "]any") || typ == "map" || typ == "object"
 	pairs := make([]string, 0, len(m))
 	for _, k := range slices.Sorted(maps.Keys(m)) {
-		if k == "" || strings.Contains(k, "=") {
-			return nil, fmt.Errorf("the key %q can't be written; keys must be non-empty and hold no \"=\"", k)
+		if strings.TrimSpace(k) == "" || strings.Contains(k, "=") {
+			return nil, fmt.Errorf("the key %q can't be written; keys must be non-empty, not only spaces, and hold no \"=\"", k)
 		}
 		var s string
 		var err error
@@ -346,8 +369,8 @@ func dottedPairs(m map[string]any) ([]string, error) {
 	var walk func(prefix string, m map[string]any) error
 	walk = func(prefix string, m map[string]any) error {
 		for k, v := range m {
-			if k == "" || strings.ContainsAny(k, ".=") {
-				return fmt.Errorf("the key %q can't be written; dotted keys hold no \".\" or \"=\" and aren't empty", k)
+			if strings.TrimSpace(k) == "" || strings.ContainsAny(k, ".=") {
+				return fmt.Errorf("the key %q can't be written; dotted keys hold no \".\" or \"=\" and aren't empty or only spaces", k)
 			}
 			if sub, ok := v.(map[string]any); ok {
 				if len(sub) == 0 {
@@ -434,7 +457,9 @@ func scalarText(v any, typ string) (string, error) {
 	return "", fmt.Errorf("a %s can't be written as one value", jsonKind(v))
 }
 
-// integerText writes an integral number without a fraction or exponent.
+// integerText writes an integral number without a fraction or exponent. rotini's integer
+// types hold at most 64 bits, so a number outside the int64 and uint64 ranges is refused
+// before it is written out, which for "1e5000000" would take seconds and megabytes.
 func integerText(s string) (string, error) {
 	f, _, err := big.ParseFloat(s, 10, 256, big.ToNearestEven)
 	if err != nil {
@@ -443,8 +468,17 @@ func integerText(s string) (string, error) {
 	if !f.IsInt() {
 		return "", fmt.Errorf("%s isn't a whole number", s)
 	}
+	if f.Cmp(minInteger) < 0 || f.Cmp(maxInteger) > 0 {
+		return "", fmt.Errorf("%s is out of range for a 64-bit integer", s)
+	}
 	return f.Text('f', 0), nil
 }
+
+// minInteger and maxInteger bound the values rotini's integer types can hold.
+var (
+	minInteger = new(big.Float).SetInt64(math.MinInt64)
+	maxInteger = new(big.Float).SetUint64(math.MaxUint64)
+)
 
 // countValue reads a count: a whole number, at least 0.
 func countValue(v any) (int, error) {

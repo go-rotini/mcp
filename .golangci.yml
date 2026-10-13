@@ -110,6 +110,8 @@ linters:
       exclude-functions:
         # AsType returns (E, bool); the bool is the check.
         - errors.AsType
+        # Closing a handle on a cleanup path has nothing to do on failure.
+        - golang.org/x/sys/windows.CloseHandle
 
     gosec:
       excludes:

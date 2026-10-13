@@ -33,10 +33,12 @@ const errorSchemaVersion = 1
 func (t *tool) result(r *run) *sdk.CallToolResult {
 	meta := sdk.Meta{metaExitCode: r.code}
 	switch {
+	case r.failure != "":
+		return errorResult(meta, r.failure)
 	case r.overLimit:
-		return errorResult(meta, "the command's output passed the server's output limit; it was stopped")
+		return errorResult(meta, stoppedText("the command's output passed the server's output limit; it was stopped", r))
 	case r.timedOut:
-		return errorResult(meta, "the command ran past the server's timeout; it was stopped")
+		return errorResult(meta, stoppedText("the command ran past the server's timeout; it was stopped", r))
 	case r.code != 0:
 		return t.failure(meta, r)
 	}
@@ -84,6 +86,21 @@ func (t *tool) failure(meta sdk.Meta, r *run) *sdk.CallToolResult {
 		meta[metaError] = line
 	}
 	return res
+}
+
+// stoppedTail is how much of a stopped run's output its result keeps.
+const stoppedTail = 4 << 10
+
+// stoppedText is the text of a run that was stopped: why, then the end of what it wrote on
+// stderr (or on stdout, when stderr is empty), which often says why it hung.
+func stoppedText(why string, r *run) string {
+	if t := tail(r.stderr, stoppedTail); t != "" {
+		return why + "\n\nthe end of its stderr:\n" + t
+	}
+	if t := tail(r.stdout, stoppedTail); t != "" {
+		return why + "\n\nthe end of its stdout:\n" + t
+	}
+	return why
 }
 
 func errorResult(meta sdk.Meta, text string) *sdk.CallToolResult {

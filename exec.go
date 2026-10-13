@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,16 +21,20 @@ type run struct {
 	code           int
 	timedOut       bool
 	overLimit      bool
+	failure        string // why the program couldn't be run, or ""
 }
 
 // execute runs the program for a call. Canceling ctx (the client canceled the call) or the
-// timeout sends the process SIGTERM, so rotini's signal handling runs, and kills it after the
-// grace period; with no grace period it is killed at once. Stdin is the call's stdin bytes, never
-// the server's own stdin, which is the MCP transport.
+// timeout sends SIGTERM to the program and every process it started, so rotini's signal
+// handling runs, and kills them after the grace period; with no grace period they are killed at
+// once. Stdin is the call's stdin bytes, never the server's own stdin, which is the MCP
+// transport. A program that can't be started is a run with failure set. A canceled call
+// returns the cancellation as an error, however the stopped program exited.
 //
 // A run that exits while a process it started still holds its stdout or stderr open is
 // finished once the grace period (or drainDelay) has passed: the result has the output read by
-// then and the program's own exit status.
+// then and the program's own exit status. Such a process is left running unless the run was
+// stopped.
 func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -37,11 +43,13 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 		ctx, stop = context.WithTimeoutCause(ctx, s.cfg.timeout, context.DeadlineExceeded)
 		defer stop()
 	}
+	g := &group{}
 	cmd := exec.CommandContext(ctx, s.exe, c.Argv...)
-	cmd.Cancel = func() error { return terminate(cmd) }
+	g.prepare(cmd)
+	cmd.Cancel = func() error { return g.terminate(cmd) }
 	cmd.WaitDelay = s.cfg.grace
 	if s.cfg.grace <= 0 {
-		cmd.Cancel = func() error { return kill(cmd) }
+		cmd.Cancel = func() error { return g.kill(cmd) }
 		cmd.WaitDelay = drainDelay
 	}
 	cmd.Env = c.Env
@@ -50,7 +58,35 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	stdout := &cappedBuffer{limit: s.cfg.outputLimit, over: func() { cancel(errOutputLimit) }}
 	stderr := &cappedBuffer{limit: s.cfg.outputLimit, over: func() { cancel(errOutputLimit) }}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("mcp: %w", context.Cause(ctx))
+		}
+		return &run{code: -1, failure: "the program couldn't be started: " + startError(err)}, nil
+	}
+	g.attach(cmd)
+	// A stopped run's processes are all killed, so nothing it started outlives it. Where the
+	// system allows, that happens while the program is exited but not yet reaped, when its
+	// process group ID can't belong to another group.
+	killed := false
+	stop := func() {
+		killed = true
+		if err := g.kill(cmd); err != nil && s.log != nil {
+			s.log.Warn("stopping a run", "err", err)
+		}
+	}
+	if g.exited(cmd) && ctx.Err() != nil {
+		stop()
+	}
+	err := cmd.Wait()
+	if ctx.Err() != nil && !killed {
+		// Stopped after the program exited, while a process it started held its output open,
+		// or on a system that can't wait without reaping. The group ID is safe to signal
+		// while any process of the group lives; once none does, another group could take it
+		// in the moment before this kill.
+		stop()
+	}
+	g.close()
 	r := &run{stdout: stdout.bytes(), stderr: stderr.bytes(), code: -1}
 	if cmd.ProcessState != nil {
 		r.code = cmd.ProcessState.ExitCode()
@@ -62,15 +98,15 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	case errors.Is(cause, context.DeadlineExceeded) && s.cfg.timeout > 0:
 		r.timedOut = true
 		return r, nil
+	case cause != nil:
+		// The call was canceled: how the stopped program exited is not its result.
+		return nil, fmt.Errorf("mcp: %w", cause)
 	}
 	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil {
 		return r, nil // the program exited; a process it started kept the output open
 	}
 	if _, ok := errors.AsType[*exec.ExitError](err); err != nil && !ok {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("mcp: %w", context.Cause(ctx))
-		}
-		return nil, fmt.Errorf("mcp: run %s: %w", s.exe, err)
+		r.failure = "the program's run failed: " + err.Error()
 	}
 	return r, nil
 }
@@ -107,12 +143,25 @@ func (b *cappedBuffer) bytes() []byte {
 	return bytes.Clone(b.buf.Bytes())
 }
 
-// kill stops the process at once, for a server with no grace period.
-func kill(cmd *exec.Cmd) error {
-	if err := cmd.Process.Kill(); err != nil {
-		return fmt.Errorf("mcp: stop the program: %w", err)
+// startError says why the program couldn't be started, without the path the server runs it
+// from.
+func startError(err error) string {
+	if pe, ok := errors.AsType[*os.PathError](err); ok {
+		return pe.Err.Error()
 	}
-	return nil
+	return err.Error()
+}
+
+// tail is at most the last n bytes of b, trimmed, starting at a whole line when one starts in
+// them.
+func tail(b []byte, n int) string {
+	if len(b) > n {
+		b = b[len(b)-n:]
+		if i := bytes.IndexByte(b, '\n'); i >= 0 && i < len(b)-1 {
+			b = b[i+1:]
+		}
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // defaultGrace is how long a canceled process has to exit after SIGTERM before it is killed.

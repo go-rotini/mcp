@@ -36,7 +36,7 @@ go install github.com/go-rotini/mcp/cmd/rotini-mcp@latest   # the command
 go get github.com/go-rotini/mcp                             # the library
 ```
 
-Requires Go 1.27 or later and rotini v1.4.0 or later.
+Requires Go 1.27 or later and rotini v1.4.3 or later.
 
 ## Writing the tools file
 
@@ -69,6 +69,7 @@ rotini-mcp serve --tools tools/mcp.json --bin ./taskr
 | `--timeout` | `0s` (none) | stop a call that runs longer |
 | `--grace` | `5s` | time between SIGTERM and kill for a stopped call (`0` kills it at once) |
 | `--output-limit` | `10Mi` | the most a call may write on each of stdout and stderr |
+| `--concurrency` | `0` (none) | run at most this many calls at once; more wait their turn |
 | `--revision` | `2026-07-28` | the MCP revision to serve for (`2025-11-25` for older clients) |
 
 Add it to a client:
@@ -82,7 +83,10 @@ rotini-mcp config disable vscode taskr
 
 Clients: `claude-desktop`, `claude-code` (the project's `.mcp.json`), `cursor` and `vscode`
 (`--scope user` or `project`). A file is backed up to `<file>.bak` before it is rewritten,
-replacing an earlier backup; the rewrite keeps every other setting, but comments are not kept.
+replacing an earlier backup; the rewrite keeps every other setting in its order, but comments are
+not kept. Enabling a server that is already there updates its command, arguments and env and keeps
+its other settings (such as `disabled` or `autoApprove`). A file that is a symbolic link stays one:
+the file it links to is rewritten.
 `--env` values are written into the file, and a project's file is often committed, so keep
 secrets out of them. The entry names the `rotini-mcp` executable that wrote it, so run an
 installed one, not one from `go run`.
@@ -137,12 +141,22 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
   line on stderr is its structured content. A tool with an output schema puts the error line in
   `_meta["dev.rotini/error"]` instead, since clients check structured content against the output
   schema even on an error result. `_meta["dev.rotini/exit_code"]` has the exit code.
-- **A canceled call** or one past the timeout sends the program SIGTERM and kills it after the
-  grace period (at once with a grace period of 0). Windows can't send SIGTERM, so there the
-  program is killed at once.
+- **A canceled call**, one past the timeout or one past the output limit sends SIGTERM to the
+  program and every process it started (they share a process group), and kills them after the
+  grace period (at once with a grace period of 0). The result's text ends with the last few KiB
+  the program wrote on stderr (or stdout). Windows can't send SIGTERM, so there the program and
+  the processes it started (a job object holds them) are killed at once. There is no timeout
+  unless one is set.
+- **A program that can't be started**, a parameter left out by the parameter selector and a
+  value holding a NUL byte are error results, not protocol errors.
+- **Revisions:** a client that negotiates a revision before 2026-07-28 is served the
+  `{"result": …}` form of a tool whose output isn't an object, in `tools/list` and in results.
+  That is every client that starts with `initialize`, whatever revision it asks for, since
+  `initialize` never settles on 2026-07-28 or later.
 - **A background process** the program started that keeps its stdout or stderr open doesn't
   hold the call: once the program exits, the result has the output read within the grace period
-  (a second with a grace period of 0) and the program's exit status.
+  (a second with a grace period of 0) and the program's exit status. Such a process keeps
+  running unless the call was stopped.
 
 ## Library options
 
@@ -152,6 +166,7 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
 | `WithEnv(env)` / `WithDir(dir)` | each run's environment and directory (default: the server's) |
 | `WithTimeout(d)` / `WithGrace(d)` | stop long runs; time between SIGTERM and kill (0: kill at once) |
 | `WithOutputLimit(n)` | cap each of stdout and stderr per run |
+| `WithMaxConcurrent(n)` | run at most n calls at once; more wait their turn |
 | `WithStdio(in, out)` | serve on these streams instead of the process's stdin and stdout |
 | `WithSelector(fn)` / `WithParameterSelector(fn)` | serve only some tools or parameters |
 | `WithMiddleware(mw...)` | wrap each call, with its command line built, for logging or policy |
