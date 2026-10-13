@@ -419,3 +419,14 @@ func TestIntegerText(t *testing.T) {
 		}
 	}
 }
+
+// shorten counts and cuts characters, not bytes.
+func TestShorten(t *testing.T) {
+	in := strings.Repeat("é", 50)
+	if got, want := shorten(in), strings.Repeat("é", 32)+"… (50 characters)"; got != want {
+		t.Errorf("shorten = %q, want %q", got, want)
+	}
+	if got := shorten(strings.Repeat("é", 40)); got != strings.Repeat("é", 40) {
+		t.Errorf("shorten of 40 characters = %q", got)
+	}
+}

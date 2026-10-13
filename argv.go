@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ArgvError is a tool call no command line can express: a parameter the tool doesn't have, a
@@ -547,10 +548,16 @@ func decimalParts(s string) (neg bool, digits string, exp int64, ok bool) {
 // shorten is s as an error quotes it: whole when short, else its start and its length.
 func shorten(s string) string {
 	const limit = 40
-	if len(s) <= limit {
+	n := utf8.RuneCountInString(s)
+	if n <= limit {
 		return s
 	}
-	return fmt.Sprintf("%s… (%d characters)", s[:limit-8], len(s))
+	cut := 0
+	for range limit - 8 {
+		_, size := utf8.DecodeRuneInString(s[cut:])
+		cut += size
+	}
+	return fmt.Sprintf("%s… (%d characters)", s[:cut], n)
 }
 
 // countValue reads a count: a whole number, at least 0.

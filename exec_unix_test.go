@@ -4,6 +4,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,5 +59,28 @@ func TestExecute_callDeadlineIsATimeout(t *testing.T) {
 	r, err = s.execute(context.Background(), &Call{Argv: []string{"-c", "sleep 5"}, Env: os.Environ()})
 	if err != nil || !r.timedOut || !r.serverTimeout {
 		t.Fatalf("server timeout: %+v, %v", r, err)
+	}
+}
+
+// A deadline set with its own cause, and one that passed before the program started, are
+// deadlines too.
+func TestExecute_deadlineWithCauseIsATimeout(t *testing.T) {
+	s := &server{cfg: &config{grace: time.Second, outputLimit: defaultOutputLimit}, exe: "/bin/sh"}
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 300*time.Millisecond, errors.New("budget spent"))
+	defer cancel()
+	r, err := s.execute(ctx, &Call{Argv: []string{"-c", "echo partial >&2; sleep 5"}, Env: os.Environ()})
+	if err != nil {
+		t.Fatalf("a deadline with its own cause: %v", err)
+	}
+	if !r.timedOut || r.serverTimeout || !strings.Contains(string(r.stderr), "partial") {
+		t.Fatalf("a deadline with its own cause: %+v", r)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	r, err = s.execute(ctx, &Call{Argv: []string{"-c", "true"}, Env: os.Environ()})
+	if err != nil || !r.timedOut || r.serverTimeout {
+		t.Fatalf("a deadline passed before the start: %+v, %v", r, err)
 	}
 }

@@ -34,7 +34,8 @@ func (*group) exited(cmd *exec.Cmd) bool { return waitExited(cmd.Process.Pid) }
 // passes. The program stays unreaped meanwhile, so its process group ID stays reserved.
 func (*group) settle(cmd *exec.Cmd, deadline time.Time) {
 	pgid := cmd.Process.Pid
-	for wait := 5 * time.Millisecond; !groupGone(pgid); wait = min(2*wait, 100*time.Millisecond) {
+	var scan groupScan
+	for wait := 5 * time.Millisecond; !groupGone(pgid, &scan); wait = min(2*wait, 100*time.Millisecond) {
 		left := time.Until(deadline)
 		if left <= 0 {
 			return
@@ -44,8 +45,9 @@ func (*group) settle(cmd *exec.Cmd, deadline time.Time) {
 }
 
 // groupGone reports whether no process of the process group pgid is left running; processes
-// that have exited but aren't yet reaped don't count.
-func groupGone(pgid int) bool {
+// that have exited but aren't yet reaped don't count. scan carries what one poll learned to
+// the next.
+func groupGone(pgid int, scan *groupScan) bool {
 	err := syscall.Kill(-pgid, 0)
 	switch {
 	case errors.Is(err, syscall.ESRCH):
@@ -55,7 +57,7 @@ func groupGone(pgid int) bool {
 	case err != nil:
 		return false
 	}
-	return !runningInGroup(pgid)
+	return !runningInGroup(pgid, scan)
 }
 
 // terminate asks every process of the run to stop with SIGTERM, which rotini's signal handling

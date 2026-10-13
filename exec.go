@@ -35,7 +35,7 @@ type run struct {
 // they are killed at once. Stdin is the call's stdin bytes, never the server's own stdin, which
 // is the MCP transport. A program that can't be started is a run with failure set. A canceled
 // call returns the cancellation as an error, however the stopped program exited; a run stopped
-// by a deadline is a timed-out run.
+// by a deadline, or whose deadline passed before the program started, is a timed-out run.
 //
 // A run that exits while a process it started still holds its stdout or stderr open is
 // finished once the grace period (or drainDelay) has passed: the result has the output read by
@@ -71,6 +71,9 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	stderr := &cappedBuffer{limit: s.cfg.outputLimit, over: func() { cancel(errOutputLimit) }}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Start(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return &run{code: -1, timedOut: true, serverTimeout: errors.Is(context.Cause(ctx), errServerTimeout)}, nil
+		}
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("mcp: %w", context.Cause(ctx))
 		}
@@ -111,11 +114,13 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	if cmd.ProcessState != nil {
 		r.code = cmd.ProcessState.ExitCode()
 	}
+	// A deadline is told by ctx.Err(), not by the cause, which a deadline set with
+	// context.WithTimeoutCause or WithDeadlineCause replaces with its own.
 	switch cause := context.Cause(ctx); {
 	case errors.Is(cause, errOutputLimit):
 		r.overLimit = true
 		return r, nil
-	case errors.Is(cause, context.DeadlineExceeded):
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		r.timedOut, r.serverTimeout = true, errors.Is(cause, errServerTimeout)
 		return r, nil
 	case cause != nil:

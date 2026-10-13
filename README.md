@@ -146,9 +146,9 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
   share a process group), and kills them after the grace period, or once they have all exited
   (at once with a grace period of 0). A canceled call ends with the cancellation as an error;
   otherwise the result's text ends with the last few KiB the program wrote on stderr (or
-  stdout). On plan9, js and wasip1 only the program itself is stopped. Windows can't send SIGTERM, so there the program and
-  the processes it started (a job object holds them) are killed at once. There is no timeout
-  unless one is set.
+  stdout). On plan9, js and wasip1 only the program itself is stopped. Windows can't send
+  SIGTERM, so there the program and the processes it started (a job object holds them) are
+  killed at once. There is no timeout unless one is set.
 - **A program that can't be started**, a parameter left out by the parameter selector and a
   value holding a NUL byte are error results, not protocol errors.
 - **Revisions:** a client that negotiates a revision before 2026-07-28 is served the

@@ -37,7 +37,7 @@ lint:
 # check-generated fails when internal/cmd/rotinimcp/zz_rotini.go isn't what the rotini version
 # go.mod requires generates from cmd/rotini-mcp's spec and conf.
 check-generated:
-	@v=$$(go list -m -f '{{.Version}}' github.com/go-rotini/rotini) && \
+	@v=$$(GOWORK=off go list -m -f '{{.Version}}' github.com/go-rotini/rotini) && \
 	GOWORK=off go -C cmd/rotini-mcp run github.com/go-rotini/rotini/cmd/rotini@$$v generate --dry-run
 
 vuln:
