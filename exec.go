@@ -9,27 +9,33 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // errOutputLimit stops a run whose stdout or stderr passed the output limit.
 var errOutputLimit = errors.New("output limit exceeded")
 
+// errServerTimeout stops a run that passed the server's timeout.
+var errServerTimeout = fmt.Errorf("the server's timeout: %w", context.DeadlineExceeded)
+
 // run is one finished process.
 type run struct {
 	stdout, stderr []byte
 	code           int
-	timedOut       bool
+	timedOut       bool // stopped by a deadline
+	serverTimeout  bool // that deadline was the server's timeout
 	overLimit      bool
 	failure        string // why the program couldn't be run, or ""
 }
 
-// execute runs the program for a call. Canceling ctx (the client canceled the call) or the
-// timeout sends SIGTERM to the program and every process it started, so rotini's signal
-// handling runs, and kills them after the grace period; with no grace period they are killed at
-// once. Stdin is the call's stdin bytes, never the server's own stdin, which is the MCP
-// transport. A program that can't be started is a run with failure set. A canceled call
-// returns the cancellation as an error, however the stopped program exited.
+// execute runs the program for a call. Canceling ctx (the client canceled the call), a
+// deadline on ctx or the timeout sends SIGTERM to the program and every process it started, so
+// rotini's signal handling runs, and kills them after the grace period; with no grace period
+// they are killed at once. Stdin is the call's stdin bytes, never the server's own stdin, which
+// is the MCP transport. A program that can't be started is a run with failure set. A canceled
+// call returns the cancellation as an error, however the stopped program exited; a run stopped
+// by a deadline is a timed-out run.
 //
 // A run that exits while a process it started still holds its stdout or stderr open is
 // finished once the grace period (or drainDelay) has passed: the result has the output read by
@@ -40,13 +46,19 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	defer cancel(nil)
 	if s.cfg.timeout > 0 {
 		var stop context.CancelFunc
-		ctx, stop = context.WithTimeoutCause(ctx, s.cfg.timeout, context.DeadlineExceeded)
+		ctx, stop = context.WithTimeoutCause(ctx, s.cfg.timeout, errServerTimeout)
 		defer stop()
 	}
 	g := &group{}
 	cmd := exec.CommandContext(ctx, s.exe, c.Argv...)
 	g.prepare(cmd)
-	cmd.Cancel = func() error { return g.terminate(cmd) }
+	// termAt is when SIGTERM was sent, in Unix nanoseconds, so the grace period can be kept
+	// after the program exits.
+	var termAt atomic.Int64
+	cmd.Cancel = func() error {
+		termAt.Store(time.Now().UnixNano())
+		return g.terminate(cmd)
+	}
 	cmd.WaitDelay = s.cfg.grace
 	if s.cfg.grace <= 0 {
 		cmd.Cancel = func() error { return g.kill(cmd) }
@@ -67,7 +79,8 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	g.attach(cmd)
 	// A stopped run's processes are all killed, so nothing it started outlives it. Where the
 	// system allows, that happens while the program is exited but not yet reaped, when its
-	// process group ID can't belong to another group.
+	// process group ID can't belong to another group: the processes it started keep what is
+	// left of the grace period, and are killed once it ends.
 	killed := false
 	stop := func() {
 		killed = true
@@ -76,6 +89,13 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 		}
 	}
 	if g.exited(cmd) && ctx.Err() != nil {
+		if s.cfg.grace > 0 {
+			start := time.Now()
+			if at := termAt.Load(); at != 0 {
+				start = time.Unix(0, at)
+			}
+			g.settle(cmd, start.Add(s.cfg.grace))
+		}
 		stop()
 	}
 	err := cmd.Wait()
@@ -95,8 +115,8 @@ func (s *server) execute(ctx context.Context, c *Call) (*run, error) {
 	case errors.Is(cause, errOutputLimit):
 		r.overLimit = true
 		return r, nil
-	case errors.Is(cause, context.DeadlineExceeded) && s.cfg.timeout > 0:
-		r.timedOut = true
+	case errors.Is(cause, context.DeadlineExceeded):
+		r.timedOut, r.serverTimeout = true, errors.Is(cause, errServerTimeout)
 		return r, nil
 	case cause != nil:
 		// The call was canceled: how the stopped program exited is not its result.

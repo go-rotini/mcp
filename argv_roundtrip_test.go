@@ -308,6 +308,7 @@ func FuzzArgvRoundTripKinds(f *testing.F) {
 	f.Add("9223372036854775808", uint16(65535), "", "=", "true", "@h", int64(0), "", "@")
 	f.Add("-1e18", uint16(1), " ", "a b", "x=y", "h\"", int64(1<<40), "a\nb", "--")
 	f.Add("1e5000000", uint16(3), "a", "b", "c", "d", int64(1), "w", "x")
+	f.Add("1"+strings.Repeat("0", 100000), uint16(4), "a", "b", "c", "d", int64(2), "w", "x")
 	f.Fuzz(func(t *testing.T, n string, v uint16, k1, k2, val, host string, port int64, word, rest string) {
 		for _, s := range []string{n, k1, k2, val, host, word, rest} {
 			if !utf8.ValidString(s) {

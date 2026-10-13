@@ -19,12 +19,13 @@
 //
 // The program gets the server's environment (secrets and other env inputs come from there),
 // stdin from the call's stdin parameter and never the server's own stdin, which is the MCP
-// transport. A canceled call, or one past [WithTimeout] or [WithOutputLimit], sends SIGTERM to
-// the program and every process it started, so rotini's signal handling runs, and kills them
-// after [WithGrace] (at once with a grace period of 0). On Windows they are killed at once. A
-// canceled call ends with the cancellation, not with the stopped program's output. A
-// client that negotiates a revision before 2026-07-28 is served object outputs, as
-// [WithRevision] describes.
+// transport. A canceled call, or one past [WithTimeout], its context's deadline or
+// [WithOutputLimit], sends SIGTERM to the program and every process it started, so rotini's
+// signal handling runs, and kills them after [WithGrace] (at once with a grace period of 0),
+// or once they have all exited. On Windows they are killed at once. A canceled call ends with
+// the cancellation, not with the stopped program's output; one past a deadline, such as one
+// a [Middleware] sets, ends like one past [WithTimeout]. A client that negotiates a revision
+// before 2026-07-28 is served object outputs, as [WithRevision] describes.
 //
 // # Results
 //

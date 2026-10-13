@@ -141,10 +141,12 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
   line on stderr is its structured content. A tool with an output schema puts the error line in
   `_meta["dev.rotini/error"]` instead, since clients check structured content against the output
   schema even on an error result. `_meta["dev.rotini/exit_code"]` has the exit code.
-- **A canceled call**, one past the timeout or one past the output limit sends SIGTERM to the
-  program and every process it started (they share a process group), and kills them after the
-  grace period (at once with a grace period of 0). The result's text ends with the last few KiB
-  the program wrote on stderr (or stdout). Windows can't send SIGTERM, so there the program and
+- **A canceled call**, one past the timeout or its context's deadline (a middleware may set one),
+  or one past the output limit sends SIGTERM to the program and every process it started (they
+  share a process group), and kills them after the grace period, or once they have all exited
+  (at once with a grace period of 0). A canceled call ends with the cancellation as an error;
+  otherwise the result's text ends with the last few KiB the program wrote on stderr (or
+  stdout). On plan9, js and wasip1 only the program itself is stopped. Windows can't send SIGTERM, so there the program and
   the processes it started (a job object holds them) are killed at once. There is no timeout
   unless one is set.
 - **A program that can't be started**, a parameter left out by the parameter selector and a

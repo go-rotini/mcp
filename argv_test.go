@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // taskrTools reads the tools document rotini's generator writes for its taskr fixture (copied
@@ -381,6 +382,40 @@ func TestArgv_blankMapKey(t *testing.T) {
 		_, _, err := inv.Argv(jsonArgs(t, `{"m":{" ":"x"}}`))
 		if _, ok := errors.AsType[*ArgvError](err); !ok {
 			t.Errorf("%+v: err = %v, want an ArgvError", f, err)
+		}
+	}
+}
+
+// integerText spells any JSON number form of a 64-bit integer, and refuses the rest without
+// parsing them in full or quoting them whole.
+func TestIntegerText(t *testing.T) {
+	for in, want := range map[string]string{
+		"0": "0", "-0": "0", "0.0e5": "0", "007": "7", "1e3": "1000", "1.50e1": "15", "-1E+2": "-100",
+		"150e-1": "15", "0.000e999999999999": "0", "18446744073709551615": "18446744073709551615",
+		"-9223372036854775808": "-9223372036854775808", "1" + strings.Repeat("0", 19): "1" + strings.Repeat("0", 19),
+		"1" + strings.Repeat("0", 100000) + "e-100000": "1",
+	} {
+		if got, err := integerText(in); err != nil || got != want {
+			t.Errorf("integerText(%.40q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	long := "1" + strings.Repeat("0", 2_000_000)
+	for in, reason := range map[string]string{
+		"2.5": "whole number", "1e-1": "whole number", "18446744073709551616": "out of range",
+		"-9223372036854775809": "out of range", "1e21": "out of range", "1e99999999999": "out of range",
+		"-1e300000000": "out of range", "1e-99999999999": "whole number", "x": "isn't a number",
+		"1.": "isn't a number", "1e": "isn't a number", "--1": "isn't a number", "1 ": "isn't a number",
+		long: "out of range", long + ".5": "out of range", "0." + long: "whole number",
+	} {
+		start := time.Now()
+		_, err := integerText(in)
+		if took := time.Since(start); took > 200*time.Millisecond {
+			t.Errorf("integerText of %d characters took %v", len(in), took)
+		}
+		if err == nil || !strings.Contains(err.Error(), reason) {
+			t.Errorf("integerText(%.40q) = %v, want %q", in, err, reason)
+		} else if len(err.Error()) > 100 {
+			t.Errorf("the error quotes %d characters", len(err.Error()))
 		}
 	}
 }

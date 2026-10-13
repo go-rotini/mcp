@@ -8,15 +8,15 @@
 # still applies to the code the tool checks; -modfile itself can't be used in workspace mode.
 TOOL = $$(GOWORK=off go tool -modfile=tools.mod -n $(1))
 
-.PHONY: all clean lint test test-fuzz test-mutation test-race tools-upgrade vuln vuln-tools
+.PHONY: all check-generated clean lint test test-fuzz test-mutation test-race tools-upgrade vuln vuln-tools
 
 all: clean lint test test-fuzz test-mutation test-race
 
 clean:
 	@rm -rf *.out test_mutation.json
 
-# lint also checks the Windows and macOS builds, whose process handling differs, wherever
-# it runs.
+# lint also checks the Windows and macOS builds, whose process handling differs, and that the
+# package builds for systems without process groups, wherever it runs.
 lint:
 	@gofmt_unformatted=$$(gofmt -l . 2>/dev/null | grep -v '^testdata/' || true); \
 	test -z "$$gofmt_unformatted" || (echo "files not formatted:" && echo "$$gofmt_unformatted" && exit 1)
@@ -26,9 +26,19 @@ lint:
 	$(call TOOL,golangci-lint) run ./...
 	GOOS=windows $(call TOOL,golangci-lint) run ./...
 	GOOS=darwin $(call TOOL,golangci-lint) run ./...
+	GOOS=plan9 GOARCH=amd64 go build . ./clients
+	GOOS=js GOARCH=wasm go build . ./clients
+	GOOS=wasip1 GOARCH=wasm go build . ./clients
 	$(call TOOL,go-licenses) check ./...
 	@$(MAKE) --no-print-directory vuln
 	@$(MAKE) --no-print-directory vuln-tools
+	@$(MAKE) --no-print-directory check-generated
+
+# check-generated fails when internal/cmd/rotinimcp/zz_rotini.go isn't what the rotini version
+# go.mod requires generates from cmd/rotini-mcp's spec and conf.
+check-generated:
+	@v=$$(go list -m -f '{{.Version}}' github.com/go-rotini/rotini) && \
+	GOWORK=off go -C cmd/rotini-mcp run github.com/go-rotini/rotini/cmd/rotini@$$v generate --dry-run
 
 vuln:
 	@$(call TOOL,govulncheck) -test ./...

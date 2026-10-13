@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -46,6 +47,9 @@ func (g *group) attach(cmd *exec.Cmd) {
 // exited reports false: a job object is reached by its handle, so stopping the run after the
 // program is reaped is safe, and there is nothing to wait for first.
 func (*group) exited(*exec.Cmd) bool { return false }
+
+// settle is never called, since exited reports false.
+func (*group) settle(*exec.Cmd, time.Time) {}
 
 // terminate kills every process of the run: Windows can't send SIGTERM, so rotini's signal
 // handling doesn't run there.

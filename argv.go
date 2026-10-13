@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math"
-	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -458,27 +456,102 @@ func scalarText(v any, typ string) (string, error) {
 }
 
 // integerText writes an integral number without a fraction or exponent. rotini's integer
-// types hold at most 64 bits, so a number outside the int64 and uint64 ranges is refused
-// before it is written out, which for "1e5000000" would take seconds and megabytes.
+// types hold at most 64 bits, so a number outside the int64 and uint64 ranges is refused. The
+// text is read digit by digit, never parsed in full, so neither "1e5000000" nor a million
+// digits written out costs more than reading them.
 func integerText(s string) (string, error) {
-	f, _, err := big.ParseFloat(s, 10, 256, big.ToNearestEven)
+	neg, digits, exp, ok := decimalParts(s)
+	switch {
+	case !ok:
+		return "", fmt.Errorf("%q isn't a number", shorten(s))
+	case digits == "":
+		return "0", nil
+	case exp > 20:
+		return "", fmt.Errorf("%s is out of range for a 64-bit integer", shorten(s))
+	case int64(len(digits)) > exp:
+		return "", fmt.Errorf("%s isn't a whole number", shorten(s))
+	}
+	text := digits + strings.Repeat("0", int(exp)-len(digits))
+	var err error
+	if neg {
+		text = "-" + text
+		_, err = strconv.ParseInt(text, 10, 64)
+	} else {
+		_, err = strconv.ParseUint(text, 10, 64)
+	}
 	if err != nil {
-		return "", fmt.Errorf("%q isn't a number", s)
+		return "", fmt.Errorf("%s is out of range for a 64-bit integer", shorten(s))
 	}
-	if !f.IsInt() {
-		return "", fmt.Errorf("%s isn't a whole number", s)
-	}
-	if f.Cmp(minInteger) < 0 || f.Cmp(maxInteger) > 0 {
-		return "", fmt.Errorf("%s is out of range for a 64-bit integer", s)
-	}
-	return f.Text('f', 0), nil
+	return text, nil
 }
 
-// minInteger and maxInteger bound the values rotini's integer types can hold.
-var (
-	minInteger = new(big.Float).SetInt64(math.MinInt64)
-	maxInteger = new(big.Float).SetUint64(math.MaxUint64)
-)
+// decimalParts reads a JSON number as its sign and the value 0.digits × 10^exp, digits having
+// no leading or trailing zeros ("" for zero). ok is false when s isn't a JSON number.
+func decimalParts(s string) (neg bool, digits string, exp int64, ok bool) {
+	i := 0
+	run := func() string {
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		return s[start:i]
+	}
+	if i < len(s) && s[i] == '-' {
+		neg = true
+		i++
+	}
+	whole := run()
+	if whole == "" {
+		return false, "", 0, false
+	}
+	var frac string
+	if i < len(s) && s[i] == '.' {
+		i++
+		if frac = run(); frac == "" {
+			return false, "", 0, false
+		}
+	}
+	var shift int64
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		expNeg := false
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			expNeg = s[i] == '-'
+			i++
+		}
+		e := run()
+		if e == "" {
+			return false, "", 0, false
+		}
+		// Past 9 digits the exponent only has to be known to be huge.
+		shift = 1 << 40
+		if e = strings.TrimLeft(e, "0"); len(e) <= 9 {
+			shift = 0
+			for _, d := range []byte(e) {
+				shift = 10*shift + int64(d-'0')
+			}
+		}
+		if expNeg {
+			shift = -shift
+		}
+	}
+	if i != len(s) {
+		return false, "", 0, false
+	}
+	all := whole + frac
+	trimmed := strings.TrimLeft(all, "0")
+	exp = int64(len(whole)-(len(all)-len(trimmed))) + shift
+	return neg, strings.TrimRight(trimmed, "0"), exp, true
+}
+
+// shorten is s as an error quotes it: whole when short, else its start and its length.
+func shorten(s string) string {
+	const limit = 40
+	if len(s) <= limit {
+		return s
+	}
+	return fmt.Sprintf("%s… (%d characters)", s[:limit-8], len(s))
+}
 
 // countValue reads a count: a whole number, at least 0.
 func countValue(v any) (int, error) {

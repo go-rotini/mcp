@@ -38,6 +38,9 @@ func (t *tool) result(r *run) *sdk.CallToolResult {
 	case r.overLimit:
 		return errorResult(meta, stoppedText("the command's output passed the server's output limit; it was stopped", r))
 	case r.timedOut:
+		if !r.serverTimeout {
+			return errorResult(meta, stoppedText("the command ran past the call's deadline; it was stopped", r))
+		}
 		return errorResult(meta, stoppedText("the command ran past the server's timeout; it was stopped", r))
 	case r.code != 0:
 		return t.failure(meta, r)

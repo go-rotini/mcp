@@ -11,7 +11,7 @@ generate:
     - type: help
       enabled: true
     - type: completion
-      enabled: true
+      enabled: false
     - type: man
       enabled: false
     - type: markdown
