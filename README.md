@@ -36,7 +36,7 @@ go install github.com/go-rotini/mcp/cmd/rotini-mcp@latest   # the command
 go get github.com/go-rotini/mcp                             # the library
 ```
 
-Requires Go 1.27 or later and rotini v1.4.3 or later.
+Requires Go 1.27 or later and rotini v1.5.0 or later.
 
 ## Writing the tools file
 
