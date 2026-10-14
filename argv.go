@@ -6,20 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math/big"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ArgvError is a tool call no command line can express: a parameter the tool doesn't have, a
-// value its flag can't take, or a secret. Param names the parameter.
+// value its flag can't take, or a secret.
 type ArgvError struct {
-	Param  string
+	Param  string // the parameter, or "" when the problem isn't one parameter's
 	Reason string
 }
 
+// Error returns "mcp: <param>: <reason>", leaving out an empty Param.
 func (e *ArgvError) Error() string {
 	if e.Param == "" {
 		return "mcp: " + e.Reason
@@ -28,8 +29,8 @@ func (e *ArgvError) Error() string {
 }
 
 // Argv turns a tool call's arguments back into the command line that supplies them, the way
-// rotini.ArgvOf does for a typed inputs value: argv (without the program name) and the bytes
-// to write on stdin.
+// [github.com/go-rotini/rotini.ArgvOf] does for a typed inputs value: argv (without the program
+// name) and the bytes to write on stdin.
 //
 // The command's path comes first, then the fixed flags (the machine-output flag), then one
 // attached occurrence per flag value (--name=value), in parameter-name order. A list or map
@@ -38,9 +39,9 @@ func (e *ArgvError) Error() string {
 // object is JSON, a count repeats the bare flag (0 writes nothing), and a bool is its bare flag
 // for true and its negated form (or --name=false) for false. A "--" comes before the
 // positionals, so a value that looks like a flag stays a positional, also when the last
-// argument is a passthrough one; a variadic argument with a separator quotes each item on its
-// own. On a parameter whose `from` includes file, a value starting with @ is written with the @
-// doubled. A null or missing parameter is left out.
+// argument is a passthrough one; a list argument with a separator quotes each item on its own.
+// On a parameter whose `from` includes file, a value starting with @ is written with the @
+// doubled. A null or missing parameter is left out, as is an empty list for an argument.
 //
 // A passthrough command reads every word after its name as typed, so its flags (all inherited:
 // a passthrough command declares none) and the fixed flags come before its name, and its words
@@ -51,7 +52,8 @@ func (e *ArgvError) Error() string {
 // command line is visible to other users of the machine; the program reads secrets from the
 // server's environment), a count of 0 on a count flag with a default, an explicit empty list or
 // map on a flag without a separator, "-" on a parameter that reads stdin from it, an argument
-// given after one left out, and map keys or free-form values that don't read back as given.
+// given after one left out, any flag on a passthrough root command, and map keys or free-form
+// values that don't read back as given, and a NUL byte in any value but stdin's.
 func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err error) {
 	for name := range args {
 		if _, ok := inv.Flags[name]; ok {
@@ -64,6 +66,11 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 			continue
 		}
 		return nil, nil, &ArgvError{Param: name, Reason: "the tool has no such parameter"}
+	}
+	for _, name := range slices.Sorted(maps.Keys(args)) {
+		if (inv.Stdin == nil || name != inv.Stdin.Param) && holdsNUL(args[name]) {
+			return nil, nil, &ArgvError{Param: name, Reason: "the value holds a NUL byte, which a command line can't carry"}
+		}
 	}
 	flags := slices.Clone(inv.Fixed)
 	for _, name := range slices.Sorted(maps.Keys(inv.Flags)) {
@@ -103,6 +110,23 @@ func (inv Invoke) Argv(args map[string]any) (argv []string, stdin []byte, err er
 	argv = append(argv, flags...)
 	argv = append(argv, inv.Path[max(n-1, 0):]...)
 	return append(argv, escapeResponseWords(words, inv.ResponsePrefix)...), stdin, nil
+}
+
+// holdsNUL reports whether a JSON value holds a NUL byte in any string or object key.
+func holdsNUL(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.IndexByte(t, 0) >= 0
+	case []any:
+		return slices.ContainsFunc(t, holdsNUL)
+	case map[string]any:
+		for k, e := range t {
+			if strings.IndexByte(k, 0) >= 0 || holdsNUL(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // escapeResponseWords doubles the response-file prefix on the raw words before the first "--",
@@ -319,8 +343,8 @@ func mapPairs(m map[string]any, typ string) ([]string, error) {
 	freeForm := typ == "" || strings.HasSuffix(typ, "]any") || typ == "map" || typ == "object"
 	pairs := make([]string, 0, len(m))
 	for _, k := range slices.Sorted(maps.Keys(m)) {
-		if k == "" || strings.Contains(k, "=") {
-			return nil, fmt.Errorf("the key %q can't be written; keys must be non-empty and hold no \"=\"", k)
+		if strings.TrimSpace(k) == "" || strings.Contains(k, "=") {
+			return nil, fmt.Errorf("the key %q can't be written; keys must be non-empty, not only spaces, and hold no \"=\"", k)
 		}
 		var s string
 		var err error
@@ -344,8 +368,8 @@ func dottedPairs(m map[string]any) ([]string, error) {
 	var walk func(prefix string, m map[string]any) error
 	walk = func(prefix string, m map[string]any) error {
 		for k, v := range m {
-			if k == "" || strings.ContainsAny(k, ".=") {
-				return fmt.Errorf("the key %q can't be written; dotted keys hold no \".\" or \"=\" and aren't empty", k)
+			if strings.TrimSpace(k) == "" || strings.ContainsAny(k, ".=") {
+				return fmt.Errorf("the key %q can't be written; dotted keys hold no \".\" or \"=\" and aren't empty or only spaces", k)
 			}
 			if sub, ok := v.(map[string]any); ok {
 				if len(sub) == 0 {
@@ -432,16 +456,108 @@ func scalarText(v any, typ string) (string, error) {
 	return "", fmt.Errorf("a %s can't be written as one value", jsonKind(v))
 }
 
-// integerText writes an integral number without a fraction or exponent.
+// integerText writes an integral number without a fraction or exponent. rotini's integer
+// types hold at most 64 bits, so a number outside the int64 and uint64 ranges is refused. The
+// text is read digit by digit, never parsed in full, so neither "1e5000000" nor a million
+// digits written out costs more than reading them.
 func integerText(s string) (string, error) {
-	f, _, err := big.ParseFloat(s, 10, 256, big.ToNearestEven)
+	neg, digits, exp, ok := decimalParts(s)
+	switch {
+	case !ok:
+		return "", fmt.Errorf("%q isn't a number", shorten(s))
+	case digits == "":
+		return "0", nil
+	case exp > 20:
+		return "", fmt.Errorf("%s is out of range for a 64-bit integer", shorten(s))
+	case int64(len(digits)) > exp:
+		return "", fmt.Errorf("%s isn't a whole number", shorten(s))
+	}
+	text := digits + strings.Repeat("0", int(exp)-len(digits))
+	var err error
+	if neg {
+		text = "-" + text
+		_, err = strconv.ParseInt(text, 10, 64)
+	} else {
+		_, err = strconv.ParseUint(text, 10, 64)
+	}
 	if err != nil {
-		return "", fmt.Errorf("%q isn't a number", s)
+		return "", fmt.Errorf("%s is out of range for a 64-bit integer", shorten(s))
 	}
-	if !f.IsInt() {
-		return "", fmt.Errorf("%s isn't a whole number", s)
+	return text, nil
+}
+
+// decimalParts reads a JSON number as its sign and the value 0.digits × 10^exp, digits having
+// no leading or trailing zeros ("" for zero). ok is false when s isn't a JSON number.
+func decimalParts(s string) (neg bool, digits string, exp int64, ok bool) {
+	i := 0
+	run := func() string {
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		return s[start:i]
 	}
-	return f.Text('f', 0), nil
+	if i < len(s) && s[i] == '-' {
+		neg = true
+		i++
+	}
+	whole := run()
+	if whole == "" {
+		return false, "", 0, false
+	}
+	var frac string
+	if i < len(s) && s[i] == '.' {
+		i++
+		if frac = run(); frac == "" {
+			return false, "", 0, false
+		}
+	}
+	var shift int64
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		expNeg := false
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			expNeg = s[i] == '-'
+			i++
+		}
+		e := run()
+		if e == "" {
+			return false, "", 0, false
+		}
+		// Past 9 digits the exponent only has to be known to be huge.
+		shift = 1 << 40
+		if e = strings.TrimLeft(e, "0"); len(e) <= 9 {
+			shift = 0
+			for _, d := range []byte(e) {
+				shift = 10*shift + int64(d-'0')
+			}
+		}
+		if expNeg {
+			shift = -shift
+		}
+	}
+	if i != len(s) {
+		return false, "", 0, false
+	}
+	all := whole + frac
+	trimmed := strings.TrimLeft(all, "0")
+	exp = int64(len(whole)-(len(all)-len(trimmed))) + shift
+	return neg, strings.TrimRight(trimmed, "0"), exp, true
+}
+
+// shorten is s as an error quotes it: whole when short, else its start and its length.
+func shorten(s string) string {
+	const limit = 40
+	n := utf8.RuneCountInString(s)
+	if n <= limit {
+		return s
+	}
+	cut := 0
+	for range limit - 8 {
+		_, size := utf8.DecodeRuneInString(s[cut:])
+		cut += size
+	}
+	return fmt.Sprintf("%s… (%d characters)", s[:cut], n)
 }
 
 // countValue reads a count: a whole number, at least 0.

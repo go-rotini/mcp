@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // taskrTools reads the tools document rotini's generator writes for its taskr fixture (copied
@@ -108,6 +109,9 @@ func TestArgv_rules(t *testing.T) {
 		{`{"in":"@file.txt"}`, []string{"run", "--in=@@file.txt"}},
 		{`{"n":3.0}`, []string{"run", "--n=3"}},
 		{`{"n":12345678901234567890}`, []string{"run", "--n=12345678901234567890"}},
+		{`{"n":18446744073709551615}`, []string{"run", "--n=18446744073709551615"}},
+		{`{"n":-9223372036854775808}`, []string{"run", "--n=-9223372036854775808"}},
+		{`{"n":1e3}`, []string{"run", "--n=1000"}},
 		{`{"argf":1e21}`, []string{"run", "--argf=1e21"}},
 		{`{"meta":{"b":true,"a":2.5,"c":"text","d":null}}`, []string{"run", "--meta=a=2.5", "--meta=b=true", "--meta=c=text", "--meta=d=null"}},
 		{`{"obj":{"host":"h","port":5432}}`, []string{"run", `--obj={"host":"h","port":5432}`}},
@@ -142,6 +146,11 @@ func TestArgv_rules(t *testing.T) {
 		{`{"in":"-"}`, "in", "reads stdin"},
 		{`{"rest":["x"]}`, "rest", "left out"},
 		{`{"n":2.5}`, "n", "whole number"},
+		{`{"n":18446744073709551616}`, "n", "out of range"},
+		{`{"n":-9223372036854775809}`, "n", "out of range"},
+		{`{"n":1e5000000}`, "n", "out of range"},
+		{`{"n":-1e300000000}`, "n", "out of range"},
+		{`{"v":1e5000000}`, "v", "whole number"},
 		{`{"meta":{"a":"true"}}`, "meta", "read back"},
 		{`{"meta":{"a=b":"c"}}`, "meta", "key"},
 		{`{"meta":{"a":{"nested":1}}}`, "meta", "free-form"},
@@ -361,4 +370,64 @@ func FuzzArgv(f *testing.F) {
 			}
 		}
 	})
+}
+
+// rotini reads a map key of only spaces as no key, so it can't be written.
+func TestArgv_blankMapKey(t *testing.T) {
+	for _, f := range []Flag{
+		{Flag: "--m", Kind: KindMap, Type: "map[string]string"},
+		{Flag: "--m", Kind: KindMap, Type: "map[string]any", DottedKeys: true},
+	} {
+		inv := Invoke{Path: []string{}, Flags: map[string]Flag{"m": f}}
+		_, _, err := inv.Argv(jsonArgs(t, `{"m":{" ":"x"}}`))
+		if _, ok := errors.AsType[*ArgvError](err); !ok {
+			t.Errorf("%+v: err = %v, want an ArgvError", f, err)
+		}
+	}
+}
+
+// integerText spells any JSON number form of a 64-bit integer, and refuses the rest without
+// parsing them in full or quoting them whole.
+func TestIntegerText(t *testing.T) {
+	for in, want := range map[string]string{
+		"0": "0", "-0": "0", "0.0e5": "0", "007": "7", "1e3": "1000", "1.50e1": "15", "-1E+2": "-100",
+		"150e-1": "15", "0.000e999999999999": "0", "18446744073709551615": "18446744073709551615",
+		"-9223372036854775808": "-9223372036854775808", "1" + strings.Repeat("0", 19): "1" + strings.Repeat("0", 19),
+		"1" + strings.Repeat("0", 100000) + "e-100000": "1",
+	} {
+		if got, err := integerText(in); err != nil || got != want {
+			t.Errorf("integerText(%.40q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	long := "1" + strings.Repeat("0", 2_000_000)
+	for in, reason := range map[string]string{
+		"2.5": "whole number", "1e-1": "whole number", "18446744073709551616": "out of range",
+		"-9223372036854775809": "out of range", "1e21": "out of range", "1e99999999999": "out of range",
+		"-1e300000000": "out of range", "1e-99999999999": "whole number", "x": "isn't a number",
+		"1.": "isn't a number", "1e": "isn't a number", "--1": "isn't a number", "1 ": "isn't a number",
+		long: "out of range", long + ".5": "out of range", "0." + long: "whole number",
+	} {
+		start := time.Now()
+		_, err := integerText(in)
+		// Generous for a busy runner under -race; parsing in full takes far longer.
+		if took := time.Since(start); took > 2*time.Second {
+			t.Errorf("integerText of %d characters took %v", len(in), took)
+		}
+		if err == nil || !strings.Contains(err.Error(), reason) {
+			t.Errorf("integerText(%.40q) = %v, want %q", in, err, reason)
+		} else if len(err.Error()) > 100 {
+			t.Errorf("the error quotes %d characters", len(err.Error()))
+		}
+	}
+}
+
+// shorten counts and cuts characters, not bytes.
+func TestShorten(t *testing.T) {
+	in := strings.Repeat("é", 50)
+	if got, want := shorten(in), strings.Repeat("é", 32)+"… (50 characters)"; got != want {
+		t.Errorf("shorten = %q, want %q", got, want)
+	}
+	if got := shorten(strings.Repeat("é", 40)); got != strings.Repeat("é", 40) {
+		t.Errorf("shorten of 40 characters = %q", got)
+	}
 }

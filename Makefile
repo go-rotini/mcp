@@ -8,13 +8,15 @@
 # still applies to the code the tool checks; -modfile itself can't be used in workspace mode.
 TOOL = $$(GOWORK=off go tool -modfile=tools.mod -n $(1))
 
-.PHONY: all clean lint test test-fuzz test-mutation test-race tools-upgrade vuln vuln-tools
+.PHONY: all check-generated clean lint test test-fuzz test-mutation test-race tools-upgrade vuln vuln-tools
 
 all: clean lint test test-fuzz test-mutation test-race
 
 clean:
 	@rm -rf *.out test_mutation.json
 
+# lint also checks the Windows and macOS builds, whose process handling differs, and that the
+# package builds for systems without process groups, wherever it runs.
 lint:
 	@gofmt_unformatted=$$(gofmt -l . 2>/dev/null | grep -v '^testdata/' || true); \
 	test -z "$$gofmt_unformatted" || (echo "files not formatted:" && echo "$$gofmt_unformatted" && exit 1)
@@ -22,9 +24,21 @@ lint:
 	go mod verify
 	GOWORK=off go mod verify -modfile=tools.mod
 	$(call TOOL,golangci-lint) run ./...
+	GOOS=windows $(call TOOL,golangci-lint) run ./...
+	GOOS=darwin $(call TOOL,golangci-lint) run ./...
+	GOOS=plan9 GOARCH=amd64 go build . ./clients
+	GOOS=js GOARCH=wasm go build . ./clients
+	GOOS=wasip1 GOARCH=wasm go build . ./clients
 	$(call TOOL,go-licenses) check ./...
 	@$(MAKE) --no-print-directory vuln
 	@$(MAKE) --no-print-directory vuln-tools
+	@$(MAKE) --no-print-directory check-generated
+
+# check-generated fails when internal/cmd/rotinimcp/zz_rotini.go isn't what the rotini version
+# go.mod requires generates from cmd/rotini-mcp's spec and conf.
+check-generated:
+	@v=$$(GOWORK=off go list -m -f '{{.Version}}' github.com/go-rotini/rotini) && \
+	GOWORK=off go -C cmd/rotini-mcp run github.com/go-rotini/rotini/cmd/rotini@$$v generate --dry-run
 
 vuln:
 	@$(call TOOL,govulncheck) -test ./...
@@ -35,16 +49,16 @@ test:
 	@go test -v -count=1 -coverprofile=test.out ./...
 	@go tool cover -func=test.out | tail -1
 
-# Fuzz target: FuzzArgv, in the root package. 60s in CI; override FUZZTIME (e.g.
-# `make test-fuzz FUZZTIME=10m`) to dig deeper. When -fuzztime runs out, go test can lose a race
-# with its own deadline and fail with a bare "context deadline exceeded" and no failing input;
-# that outcome counts as a pass. Any other failure, or any run that writes a failing input, fails
-# the target.
+# Fuzz targets: FuzzArgv, FuzzArgvRoundTrip and FuzzArgvRoundTripKinds, in the root package.
+# 60s each in CI; override FUZZTIME (e.g. `make test-fuzz FUZZTIME=10m`) to dig deeper. When
+# -fuzztime runs out, go test can lose a race with its own deadline and fail with a bare
+# "context deadline exceeded" and no failing input; that outcome counts as a pass. Any other
+# failure, or any run that writes a failing input, fails the target.
 FUZZTIME ?= 60s
 
 test-fuzz:
 	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	for target in FuzzArgv; do \
+	for target in FuzzArgv FuzzArgvRoundTrip FuzzArgvRoundTripKinds; do \
 		if ! go test -list "^$$target$$" . 2>/dev/null | grep -q "^$$target$$"; then \
 			echo "fuzz target $$target not found"; exit 1; \
 		fi; \

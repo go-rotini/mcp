@@ -1,4 +1,4 @@
-//go:generate go run github.com/go-rotini/rotini/cmd/rotini@v1.4.3 generate ./.rotini.spec.yaml --config ./.rotini.conf.yaml
+//go:generate go run github.com/go-rotini/rotini/cmd/rotini@v1.5.0 generate ./.rotini.spec.yaml --config ./.rotini.conf.yaml
 
 // Command rotini-mcp serves a rotini program's tools over MCP, and adds that server to MCP
 // clients' configuration.

@@ -3,8 +3,9 @@
 //
 // A file is changed only when asked. Before an existing file is rewritten it is copied to
 // <file>.bak, replacing an earlier backup, so the backup is the file before the last change.
-// The rewrite keeps every other key and numbers as written, but not comments, and replaces the
-// file in one step, keeping its mode.
+// The rewrite keeps every other key, in its order, and numbers as written, but not comments. It
+// replaces the file in one step, keeping its mode; when the file is a symbolic link, the file it
+// links to is replaced and the link kept.
 package clients
 
 import (
@@ -12,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -52,7 +52,7 @@ type Server struct {
 }
 
 // Dirs are the directories files are found under. A zero field means the default: the user's
-// home directory, the user's configuration directory (os.UserConfigDir) and the working
+// home directory, the user's configuration directory ([os.UserConfigDir]) and the working
 // directory.
 type Dirs struct {
 	Home, Config, Project string
@@ -114,8 +114,10 @@ func (c Client) serversKey() string {
 	return "mcpServers"
 }
 
-// Enable adds (or replaces) the server called name in the client's file, creating the file if
-// it doesn't exist.
+// Enable adds the server called name to the client's file, creating the file if it doesn't
+// exist. When the file already has a server of that name, its command, args and type are set
+// and its env replaced when s has one; its other settings (such as disabled, autoApprove, cwd
+// or timeout) are kept. It returns the file's path.
 func Enable(c Client, scope Scope, dirs Dirs, name string, s Server) (path string, err error) {
 	if name == "" || s.Command == "" {
 		return "", errors.New("clients: a server needs a name and a command")
@@ -132,18 +134,24 @@ func Enable(c Client, scope Scope, dirs Dirs, name string, s Server) (path strin
 	if err != nil {
 		return "", err
 	}
-	entry := map[string]any{"command": s.Command}
-	if c == VSCode {
-		entry["type"] = "stdio"
+	entry, _ := servers.get(name).(*object)
+	if entry == nil {
+		entry = newObject()
 	}
+	if c == VSCode {
+		entry.set("type", "stdio")
+	}
+	entry.set("command", s.Command)
 	if len(s.Args) > 0 {
-		entry["args"] = s.Args
+		entry.set("args", s.Args)
+	} else {
+		entry.delete("args")
 	}
 	if len(s.Env) > 0 {
-		entry["env"] = s.Env
+		entry.set("env", s.Env)
 	}
-	servers[name] = entry
-	doc[c.serversKey()] = servers
+	servers.set(name, entry)
+	doc.set(c.serversKey(), servers)
 	return path, write(path, doc, exists)
 }
 
@@ -162,15 +170,16 @@ func Disable(c Client, scope Scope, dirs Dirs, name string) (path string, remove
 	if err != nil {
 		return "", false, err
 	}
-	if _, ok := servers[name]; !ok {
+	if _, ok := servers.vals[name]; !ok {
 		return path, false, nil
 	}
-	delete(servers, name)
-	doc[c.serversKey()] = servers
+	servers.delete(name)
+	doc.set(c.serversKey(), servers)
 	return path, true, write(path, doc, exists)
 }
 
-// List reads the servers in the client's file, by name. A missing file has none.
+// List reads the servers in the client's file, by name. A missing file has none, and an entry
+// that doesn't read as a [Server] is left out.
 func List(c Client, scope Scope, dirs Dirs) (path string, servers map[string]Server, err error) {
 	path, err = c.Path(scope, dirs)
 	if err != nil {
@@ -185,8 +194,8 @@ func List(c Client, scope Scope, dirs Dirs) (path string, servers map[string]Ser
 		return "", nil, err
 	}
 	servers = map[string]Server{}
-	for _, name := range slices.Sorted(maps.Keys(raw)) {
-		b, err := json.Marshal(raw[name])
+	for _, name := range raw.keys {
+		b, err := json.Marshal(raw.vals[name])
 		if err != nil {
 			return "", nil, fmt.Errorf("clients: %s: server %q: %w", path, name, err)
 		}
@@ -219,17 +228,17 @@ func (d Dirs) resolve() (Dirs, error) {
 }
 
 // read loads a configuration file (JSON with comments allowed); a missing file is empty.
-// Numbers are kept as written.
-func read(path string) (doc map[string]any, exists bool, err error) {
+// Numbers are kept as written, and members in the order they are written.
+func read(path string) (doc *object, exists bool, err error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]any{}, false, nil
+		return newObject(), false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("clients: %w", err)
 	}
 	if len(bytes.TrimSpace(b)) == 0 {
-		return map[string]any{}, true, nil
+		return newObject(), true, nil
 	}
 	plain, err := jsonc.ToJSON(b)
 	if err != nil {
@@ -237,18 +246,20 @@ func read(path string) (doc map[string]any, exists bool, err error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(plain))
 	dec.UseNumber()
-	if err := dec.Decode(&doc); err != nil || doc == nil {
+	v, err := decodeValue(dec)
+	doc, ok := v.(*object)
+	if err != nil || !ok {
 		return nil, true, fmt.Errorf("clients: %s isn't a JSON object", path)
 	}
 	return doc, true, nil
 }
 
-func serversOf(doc map[string]any, key, path string) (map[string]any, error) {
-	v, ok := doc[key]
-	if !ok || v == nil {
-		return map[string]any{}, nil
+func serversOf(doc *object, key, path string) (*object, error) {
+	v := doc.get(key)
+	if v == nil {
+		return newObject(), nil
 	}
-	servers, ok := v.(map[string]any)
+	servers, ok := v.(*object)
 	if !ok {
 		return nil, fmt.Errorf("clients: %s: %q isn't an object", path, key)
 	}
@@ -257,8 +268,9 @@ func serversOf(doc map[string]any, key, path string) (map[string]any, error) {
 
 // write saves a configuration file, first copying an existing one to <file>.bak (replacing an
 // earlier backup). The new file is written beside it and renamed over it, keeping its mode, so
-// a failed write leaves the file as it was.
-func write(path string, doc map[string]any, exists bool) error {
+// a failed write leaves the file as it was. When path is a symbolic link, the file it links to
+// is the one replaced, and the link is kept.
+func write(path string, doc *object, exists bool) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -266,14 +278,18 @@ func write(path string, doc map[string]any, exists bool) error {
 	if err := enc.Encode(doc); err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
+	target, err := linkTarget(path)
+	if err != nil {
+		return err
+	}
 	mode := os.FileMode(0o600)
 	if exists {
-		info, err := os.Stat(path)
+		info, err := os.Stat(target)
 		if err != nil {
 			return fmt.Errorf("clients: %w", err)
 		}
 		mode = info.Mode().Perm()
-		old, err := os.ReadFile(path)
+		old, err := os.ReadFile(target)
 		if err != nil {
 			return fmt.Errorf("clients: %w", err)
 		}
@@ -281,11 +297,11 @@ func write(path string, doc map[string]any, exists bool) error {
 			return fmt.Errorf("clients: back up %s: %w", path, err)
 		}
 	}
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(target)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("clients: %w", err)
 	}
@@ -293,10 +309,122 @@ func write(path string, doc map[string]any, exists bool) error {
 	_, err = tmp.Write(buf.Bytes())
 	err = errors.Join(err, tmp.Chmod(mode), tmp.Close())
 	if err == nil {
-		err = os.Rename(tmp.Name(), path)
+		err = os.Rename(tmp.Name(), target)
 	}
 	if err != nil {
 		return fmt.Errorf("clients: write %s: %w", path, err)
 	}
 	return nil
+}
+
+// linkTarget is the file path names: path itself, or the file a symbolic link at path leads
+// to, which need not exist yet.
+func linkTarget(path string) (string, error) {
+	target := path
+	for range 40 {
+		info, err := os.Lstat(target)
+		if errors.Is(err, os.ErrNotExist) || (err == nil && info.Mode()&os.ModeSymlink == 0) {
+			return target, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("clients: %w", err)
+		}
+		dest, err := os.Readlink(target)
+		if err != nil {
+			return "", fmt.Errorf("clients: %w", err)
+		}
+		if !filepath.IsAbs(dest) {
+			dest = filepath.Join(filepath.Dir(target), dest)
+		}
+		target = dest
+	}
+	return "", fmt.Errorf("clients: %s: too many symbolic links", path)
+}
+
+// object is a JSON object that keeps its members in the order they were read or added.
+type object struct {
+	keys []string
+	vals map[string]any
+}
+
+func newObject() *object { return &object{vals: map[string]any{}} }
+
+// get returns the member named k, or nil.
+func (o *object) get(k string) any { return o.vals[k] }
+
+// set sets the member named k, in its place when it exists, else last.
+func (o *object) set(k string, v any) {
+	if _, ok := o.vals[k]; !ok {
+		o.keys = append(o.keys, k)
+	}
+	o.vals[k] = v
+}
+
+func (o *object) delete(k string) {
+	if _, ok := o.vals[k]; !ok {
+		return
+	}
+	delete(o.vals, k)
+	o.keys = slices.DeleteFunc(o.keys, func(s string) bool { return s == k })
+}
+
+// MarshalJSON writes the members in order.
+func (o *object) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	buf.WriteByte('{')
+	for i, k := range o.keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		if err := enc.Encode(k); err != nil {
+			return nil, err
+		}
+		buf.WriteByte(':')
+		if err := enc.Encode(o.vals[k]); err != nil {
+			return nil, err
+		}
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// decodeValue reads one JSON value, objects as *object and numbers as json.Number. A member
+// written twice keeps its first place and its last value.
+func decodeValue(dec *json.Decoder) (any, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch tok {
+	case json.Delim('{'):
+		o := newObject()
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			k, _ := kt.(string)
+			v, err := decodeValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			o.set(k, v)
+		}
+		_, err := dec.Token()
+		return o, err
+	case json.Delim('['):
+		arr := []any{}
+		for dec.More() {
+			v, err := decodeValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, v)
+		}
+		_, err := dec.Token()
+		return arr, err
+	}
+	return tok, nil
 }

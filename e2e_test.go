@@ -189,7 +189,7 @@ func checkEndToEnd(t *testing.T, cs *sdk.ClientSession) {
 }
 
 // rotiniModule finds the rotini module this one builds against, and whether it is a local
-// replacement (a scratch go.work before rotini's release) rather than a published version.
+// replacement (a replace directive) rather than a published version.
 func rotiniModule(t *testing.T, root string) (dir string, replaced bool) {
 	t.Helper()
 	out := output(t, root, nil, "go", "list", "-m", "-json", "github.com/go-rotini/rotini")

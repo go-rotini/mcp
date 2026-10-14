@@ -1,4 +1,4 @@
-version: 1.4.0
+version: 1.5.0
 command:
   name: rotini-mcp
   summary: serve a rotini program's tools over MCP
@@ -58,6 +58,10 @@ command:
           summary: the most output a call may write on each of stdout and stderr
           identifiers: [--output-limit]
           schema: { type: bytesize, default: 10Mi }
+        - name: concurrency
+          summary: run at most this many calls at once; more wait their turn (0 for no limit)
+          identifiers: [--concurrency]
+          schema: { type: int, default: 0 }
         - name: revision
           summary: the MCP revision to serve the tools for
           identifiers: [--revision]
@@ -77,7 +81,9 @@ command:
             program that serves its own tools). The entry names this rotini-mcp executable, so
             run an installed rotini-mcp, not one from go run. --env values are written into the
             client's file, which for a project's file is often committed; keep secrets out of
-            them. The file is backed up to <file>.bak, and comments in it are not kept.
+            them. A --command or --bin path is written as an absolute path. A server already in the
+            file keeps its other settings. The file is backed up to <file>.bak, and comments in it
+            are not kept.
           examples:
             - rotini-mcp config enable claude-desktop taskr --tools tools/mcp.json --bin ./taskr
             - rotini-mcp config enable cursor taskr --command taskr --arg mcp

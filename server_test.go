@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,11 +13,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/go-rotini/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -78,7 +82,43 @@ func fakeMain(args []string) int {
 		if child.Start() != nil {
 			return 2
 		}
+		if f := os.Getenv("FAKE_PID_FILE"); f != "" {
+			_ = os.WriteFile(f, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+		}
 		fmt.Println("started")
+	case "spawn":
+		// Starts a process of its own (one that ignores SIGTERM with FAKE_IGNORE_TERM=1), then
+		// waits to be stopped.
+		exe, _ := os.Executable()
+		child := exec.Command(exe, "child")
+		if child.Start() != nil {
+			return 2
+		}
+		for range 100 {
+			if _, err := os.Stat(os.Getenv("FAKE_PID_FILE")); err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		fmt.Fprintln(os.Stderr, "spawned")
+		time.Sleep(60 * time.Second)
+	case "child":
+		if os.Getenv("FAKE_IGNORE_TERM") == "1" {
+			signal.Ignore(syscall.SIGTERM)
+		}
+		_ = os.WriteFile(os.Getenv("FAKE_PID_FILE"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+		time.Sleep(60 * time.Second)
+	case "slow":
+		// Marks an overlap when another slow run holds the lock.
+		dir := os.Getenv("FAKE_LOCK_DIR")
+		lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			_ = os.WriteFile(filepath.Join(dir, "overlap"), nil, 0o600)
+			return 0
+		}
+		_ = lock.Close()
+		time.Sleep(200 * time.Millisecond)
+		_ = os.Remove(filepath.Join(dir, "lock"))
 	default:
 		return 2
 	}
@@ -318,7 +358,11 @@ func TestServer_backgroundChildHoldsOutput(t *testing.T) {
 	}
 	for _, grace := range []time.Duration{300 * time.Millisecond, 0} {
 		t.Run(grace.String(), func(t *testing.T) {
-			cs := connect(t, fakeDoc(t), WithGrace(grace))
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			exe, _ := os.Executable()
+			cs := connect(t, fakeDoc(t), WithGrace(grace), WithExecutable(exe),
+				WithEnv(append(os.Environ(), fakeEnv+"=1", "FAKE_PID_FILE="+pidFile)))
+			t.Cleanup(func() { killPID(pidFile) })
 			res := call(t, cs, "fake_orphan", nil)
 			if res.IsError || text(res) != "started\n" || fmt.Sprint(res.Meta[metaExitCode]) != "0" {
 				t.Fatalf("got %v %q, exit code %v; want the program's output and exit status", res.IsError, text(res), res.Meta[metaExitCode])
@@ -491,6 +535,7 @@ func TestNewServer_errors(t *testing.T) {
 		"kind":         {doc: `{"tools":[{"name":"x","inputSchema":{"type":"object"},"_meta":{"dev.rotini/invoke":{"path":[],"flags":{"a":{"flag":"--a","kind":"weird"}}}}}]}`, want: "unknown kind"},
 		"revision":     {doc: string(doc), opts: []Option{WithRevision("2024-01-01")}, want: "unknown MCP revision"},
 		"serving":      {doc: string(doc), opts: []Option{WithServingCommand("echo")}, want: "serving command"},
+		"sdk rejects":  {doc: `{"tools":[{"name":"x","inputSchema":{"type":"object","properties":{"a":{"type":"array","x-mcp-header":"X-A"}}},"_meta":{"dev.rotini/invoke":{"path":["x"]}}}]}`, want: `tool "x"`},
 		"required":     {doc: `{"tools":[{"name":"x","inputSchema":{"type":"object","properties":{"a":{}},"required":["a"]},"_meta":{"dev.rotini/invoke":{"path":[]}}}]}`, opts: []Option{WithParameterSelector(func(Tool, string) bool { return false })}, want: "required"},
 	}
 	for name, tc := range cases {
@@ -529,5 +574,311 @@ func TestServe_stdio(t *testing.T) {
 	_ = cs.Close()
 	if err := <-done; err != nil {
 		t.Errorf("Serve returned %v after its context was canceled", err)
+	}
+}
+
+// killPID kills the process whose pid the file holds, if any.
+func killPID(pidFile string) {
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+	}
+}
+
+// docOf is a tools document of the given tool definitions.
+func docOf(tools ...string) []byte {
+	return []byte(`{"tools":[` + strings.Join(tools, ",") + `]}`)
+}
+
+// A parameter the selector leaves out is refused even when the schema allows extra properties.
+func TestServer_hiddenParameterRefused(t *testing.T) {
+	doc := docOf(`{"name":"echo","inputSchema":{"type":"object","properties":{"note":{"type":"string"},"keep":{"type":"string"}}},
+		"_meta":{"dev.rotini/invoke":{"path":["echo"],"flags":{"note":{"flag":"--note","kind":"scalar"},"keep":{"flag":"--keep","kind":"scalar"}}}}}`)
+	cs := connect(t, doc, WithParameterSelector(func(_ Tool, p string) bool { return p != "note" }))
+	res := call(t, cs, "echo", map[string]any{"note": "smuggled"})
+	if !res.IsError || !strings.Contains(text(res), "note: the tool has no such parameter") {
+		t.Fatalf("want the hidden parameter refused, got %v: %s", res.IsError, text(res))
+	}
+	if res := call(t, cs, "echo", map[string]any{"keep": "x"}); res.IsError {
+		t.Fatalf("a kept parameter was refused: %s", text(res))
+	}
+}
+
+// Stopping a run stops what the program started too, also a process that ignores SIGTERM.
+func TestServer_stopReachesChildren(t *testing.T) {
+	doc := docOf(`{"name":"spawn","inputSchema":{"type":"object"},"_meta":{"dev.rotini/invoke":{"path":["spawn"]}}}`)
+	cases := []struct {
+		name       string
+		grace      time.Duration
+		ignoreTerm bool
+	}{
+		{"sigterm", 300 * time.Millisecond, false},
+		{"ignores sigterm", 300 * time.Millisecond, true},
+		{"no grace", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			env := append(os.Environ(), fakeEnv+"=1", "FAKE_PID_FILE="+pidFile)
+			if tc.ignoreTerm {
+				env = append(env, "FAKE_IGNORE_TERM=1")
+			}
+			exe, _ := os.Executable()
+			cs := connect(t, doc, WithExecutable(exe), WithEnv(env), WithGrace(tc.grace), WithTimeout(2*time.Second))
+			t.Cleanup(func() { killPID(pidFile) })
+			res := call(t, cs, "spawn", nil)
+			if !res.IsError || !strings.Contains(text(res), "timeout") {
+				t.Fatalf("want a timeout error, got %s", text(res))
+			}
+			b, err := os.ReadFile(pidFile)
+			if err != nil {
+				t.Fatalf("the program's child never started: %v", err)
+			}
+			pid, _ := strconv.Atoi(string(b))
+			deadline := time.Now().Add(5 * time.Second)
+			for alive(pid) {
+				if time.Now().After(deadline) {
+					t.Fatalf("the program's child %d is still running after the run was stopped", pid)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		})
+	}
+}
+
+// A stopped run's result keeps the end of what the program wrote.
+func TestServer_stoppedKeepsOutputTail(t *testing.T) {
+	exe, _ := os.Executable()
+	cs := connect(t, fakeDoc(t), WithTimeout(time.Second), WithGrace(0), WithExecutable(exe))
+	res := call(t, cs, "fake_sleep", nil)
+	if !res.IsError || !strings.Contains(text(res), "timeout") || !strings.Contains(text(res), "the end of its stderr:\nready") {
+		t.Fatalf("want the timeout and the stderr tail, got %q", text(res))
+	}
+}
+
+// A client of an older revision gets object outputs, in tools/list and in results; a client of
+// the newest gets the document's own form.
+func TestServer_revisionPerSession(t *testing.T) {
+	exe, _ := os.Executable()
+	s, err := NewServer(fakeDoc(t), WithExecutable(exe), WithEnv(append(os.Environ(), fakeEnv+"=1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ version, schema, content string }{
+		{"", `"type":"array"`, `[1,2]`},
+		{Revision20251125, `"result"`, `{"result":[1,2]}`},
+		{"2025-06-18", `"result"`, `{"result":[1,2]}`},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			st, ct := sdk.NewInMemoryTransports()
+			ss, err := s.Connect(t.Context(), st, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ss.Close() })
+			var opts *sdk.ClientSessionOptions
+			if tc.version != "" {
+				opts = &sdk.ClientSessionOptions{ProtocolVersion: tc.version}
+			}
+			cs, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "0"}, nil).Connect(t.Context(), ct, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+			list, err := cs.ListTools(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tl := range list.Tools {
+				b, _ := json.Marshal(tl.OutputSchema)
+				switch {
+				case tl.Name == "fake_array" && !strings.Contains(string(b), tc.schema):
+					t.Errorf("fake_array's output schema %s, want %s", b, tc.schema)
+				case tl.OutputSchema != nil && tc.version != "" && !strings.Contains(string(b), `"type":"object"`):
+					t.Errorf("%s's output schema isn't an object: %s", tl.Name, b)
+				}
+			}
+			res := call(t, cs, "fake_array", nil)
+			if b, _ := json.Marshal(res.StructuredContent); res.IsError || string(b) != tc.content {
+				t.Fatalf("got %v %s, want %s", res.IsError, b, tc.content)
+			}
+		})
+	}
+	// A client that asks initialize for 2026-07-28 or a later revision is settled on
+	// 2025-11-25, and is served that revision's form.
+	for _, asked := range []string{Revision20260728, "2027-03-01"} {
+		t.Run("initialize "+asked, func(t *testing.T) {
+			rs := rawConnect(t, s)
+			init := rs.send("initialize", map[string]any{"protocolVersion": asked, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "raw", "version": "0"}})
+			if v := init["result"].(map[string]any)["protocolVersion"]; v != Revision20251125 {
+				t.Fatalf("negotiated %v", v)
+			}
+			rs.notify("notifications/initialized")
+			list := rs.send("tools/list", map[string]any{})
+			for _, tl := range list["result"].(map[string]any)["tools"].([]any) {
+				if m := tl.(map[string]any); m["name"] == "fake_array" {
+					if b, _ := json.Marshal(m["outputSchema"]); !strings.Contains(string(b), `"result"`) {
+						t.Errorf("fake_array's output schema %s", b)
+					}
+				}
+			}
+			res := rs.send("tools/call", map[string]any{"name": "fake_array", "arguments": map[string]any{}})
+			if b, _ := json.Marshal(res["result"].(map[string]any)["structuredContent"]); string(b) != `{"result":[1,2]}` {
+				t.Errorf("structuredContent %s", b)
+			}
+		})
+	}
+}
+
+// rawSession speaks JSON-RPC lines to a server, as a client that uses initialize does.
+type rawSession struct {
+	w  io.Writer
+	r  *bufio.Reader
+	id int
+	t  *testing.T
+}
+
+func rawConnect(t *testing.T, s *sdk.Server) *rawSession {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	ss, err := s.Connect(t.Context(), &sdk.IOTransport{Reader: inR, Writer: outW}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inW.Close()
+		_ = ss.Close()
+		_ = outR.Close()
+	})
+	return &rawSession{w: inW, r: bufio.NewReader(outR), t: t}
+}
+
+// send sends a request and returns its response.
+func (rs *rawSession) send(method string, params any) map[string]any {
+	rs.t.Helper()
+	rs.id++
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": rs.id, "method": method, "params": params})
+	if _, err := rs.w.Write(append(b, '\n')); err != nil {
+		rs.t.Fatal(err)
+	}
+	for {
+		line, err := rs.r.ReadString('\n')
+		if err != nil {
+			rs.t.Fatal(err)
+		}
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) == nil && m["id"] != nil {
+			return m
+		}
+	}
+}
+
+func (rs *rawSession) notify(method string) {
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if _, err := rs.w.Write(append(b, '\n')); err != nil {
+		rs.t.Fatal(err)
+	}
+}
+
+// A program that can't be started, or a value no command line can carry, is an error result
+// that doesn't name the server's paths.
+func TestServer_startFailureIsErrorResult(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-program")
+	cs := connect(t, fakeDoc(t), WithExecutable(missing))
+	res := call(t, cs, "fake_plain", nil)
+	if !res.IsError || !strings.Contains(text(res), "couldn't be started") || strings.Contains(text(res), missing) {
+		t.Fatalf("want a start-failure error result without the path, got %v: %q", res.IsError, text(res))
+	}
+	cs = connect(t, fakeDoc(t))
+	res = call(t, cs, "fake_echo", map[string]any{"note": "a\x00b"})
+	if !res.IsError || !strings.Contains(text(res), "NUL") {
+		t.Fatalf("want a NUL refusal, got %v: %q", res.IsError, text(res))
+	}
+	res = call(t, cs, "fake_echo", map[string]any{"stdin": "a\x00b"})
+	if res.IsError {
+		t.Fatalf("a NUL on stdin was refused: %s", text(res))
+	}
+}
+
+// WithMaxConcurrent runs at most that many programs at once.
+func TestServer_maxConcurrent(t *testing.T) {
+	doc := docOf(`{"name":"slow","inputSchema":{"type":"object"},"_meta":{"dev.rotini/invoke":{"path":["slow"]}}}`)
+	dir := t.TempDir()
+	exe, _ := os.Executable()
+	cs := connect(t, doc, WithExecutable(exe), WithEnv(append(os.Environ(), fakeEnv+"=1", "FAKE_LOCK_DIR="+dir)), WithMaxConcurrent(1))
+	const n = 4
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			res, err := cs.CallTool(t.Context(), &sdk.CallToolParams{Name: "slow"})
+			if err == nil && res.IsError {
+				err = fmt.Errorf("error result: %s", text(res))
+			}
+			errs <- err
+		}()
+	}
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "overlap")); err == nil {
+		t.Fatal("two runs overlapped with WithMaxConcurrent(1)")
+	}
+}
+
+// A call canceled while its program runs ends with the cancellation, whatever the stopped
+// program wrote or exited with.
+func TestServer_cancelIsNotAResult(t *testing.T) {
+	exe, _ := os.Executable()
+	env := append(os.Environ(), fakeEnv+"=1", "FAKE_SIGNAL_FILE="+filepath.Join(t.TempDir(), "sig"))
+	s := &server{cfg: &config{grace: time.Second, outputLimit: defaultOutputLimit, env: env, envSet: true}, exe: exe}
+	tl := &tool{Tool: Tool{Invoke: Invoke{Path: []string{"sleep"}}}, in: mustCompile(t)}
+	h := s.handler(tl, tl)
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(500*time.Millisecond, cancel)
+	res, err := h(ctx, &sdk.CallToolRequest{Params: &sdk.CallToolParamsRaw{Name: "x"}})
+	if !errors.Is(err, context.Canceled) || res != nil {
+		t.Fatalf("got %v, %v; want the cancellation", res, err)
+	}
+}
+
+// A call waiting for a slot gives up when the client cancels it.
+func TestServer_maxConcurrentCancel(t *testing.T) {
+	exe, _ := os.Executable()
+	s := &server{cfg: &config{}, exe: exe, slots: make(chan struct{}, 1)}
+	s.slots <- struct{}{} // the one slot is taken
+	tl := &tool{Tool: Tool{Invoke: Invoke{Path: []string{"plain"}}}, in: mustCompile(t)}
+	h := s.handler(tl, tl)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := h(ctx, &sdk.CallToolRequest{Params: &sdk.CallToolParamsRaw{Name: "x"}}); err == nil {
+		t.Fatal("a canceled call waiting for a slot ran")
+	}
+}
+
+func mustCompile(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	s, err := compile("x", "input", map[string]any{"type": "object"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestRefuseBatchFile(t *testing.T) {
+	for path, refused := range map[string]bool{`C:\x\tool.cmd`: true, `C:\x\tool.BAT`: true, `C:\x\tool.exe`: false} {
+		if err := refuseBatchFile("windows", path); (err != nil) != refused {
+			t.Errorf("%s: err = %v", path, err)
+		}
+	}
+	if err := refuseBatchFile("linux", "/x/tool.cmd"); err != nil {
+		t.Errorf("refused off Windows: %v", err)
 	}
 }
