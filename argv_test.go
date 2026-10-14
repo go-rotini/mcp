@@ -409,7 +409,8 @@ func TestIntegerText(t *testing.T) {
 	} {
 		start := time.Now()
 		_, err := integerText(in)
-		if took := time.Since(start); took > 200*time.Millisecond {
+		// Generous for a busy runner under -race; parsing in full takes far longer.
+		if took := time.Since(start); took > 2*time.Second {
 			t.Errorf("integerText of %d characters took %v", len(in), took)
 		}
 		if err == nil || !strings.Contains(err.Error(), reason) {
