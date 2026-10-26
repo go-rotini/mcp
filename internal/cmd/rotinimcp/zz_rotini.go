@@ -31,7 +31,7 @@ var definition = rotini.Definition{
 		{Name: "help", Identifiers: []string{"-h", "--help"}, Summary: "print help", Type: "bool", ShortCircuit: true},
 		{Name: "version", Identifiers: []string{"--version"}, Summary: "print version", Type: "bool", ShortCircuit: true},
 	},
-	Inputs: reflect.TypeFor[RotiniMcpInputs](),
+	Inputs: rotiniTypeOf((*RotiniMcpInputs)(nil)),
 	Usage:  "rotini-mcp [flags] <command>",
 	Commands: []rotini.CommandDef{
 		{Name: "serve",
@@ -48,13 +48,13 @@ var definition = rotini.Definition{
 				{Name: "concurrency", Identifiers: []string{"--concurrency"}, Summary: "run at most this many calls at once; more wait their turn (0 for no limit)", Type: "int", Default: "0"},
 				{Name: "revision", Identifiers: []string{"--revision"}, Summary: "the MCP revision to serve the tools for", Type: "string", Default: "2026-07-28", Enum: []string{"2026-07-28", "2025-11-25"}},
 			},
-			Inputs: reflect.TypeFor[RotiniMcpServeInputs](),
+			Inputs: rotiniTypeOf((*RotiniMcpServeInputs)(nil)),
 			Usage:  "rotini-mcp serve [flags]",
 		},
 		{Name: "config",
 			Handler: "RotiniMcpConfig",
 			Summary: "add, remove or list servers in an MCP client's configuration",
-			Inputs:  reflect.TypeFor[RotiniMcpConfigInputs](),
+			Inputs:  rotiniTypeOf((*RotiniMcpConfigInputs)(nil)),
 			Usage:   "rotini-mcp config <command>",
 			Commands: []rotini.CommandDef{
 				{Name: "enable",
@@ -72,7 +72,7 @@ var definition = rotini.Definition{
 						{Name: "client", Type: "string", Required: true, Enum: []string{"claude-desktop", "claude-code", "cursor", "vscode"}},
 						{Name: "name", Type: "string", Required: true},
 					},
-					Inputs: reflect.TypeFor[RotiniMcpConfigEnableInputs](),
+					Inputs: rotiniTypeOf((*RotiniMcpConfigEnableInputs)(nil)),
 					Usage:  "rotini-mcp config enable [flags] <client> <name>",
 				},
 				{Name: "disable",
@@ -85,7 +85,7 @@ var definition = rotini.Definition{
 						{Name: "client", Type: "string", Required: true, Enum: []string{"claude-desktop", "claude-code", "cursor", "vscode"}},
 						{Name: "name", Type: "string", Required: true},
 					},
-					Inputs: reflect.TypeFor[RotiniMcpConfigDisableInputs](),
+					Inputs: rotiniTypeOf((*RotiniMcpConfigDisableInputs)(nil)),
 					Usage:  "rotini-mcp config disable [flags] <client> <name>",
 				},
 				{Name: "list",
@@ -97,7 +97,7 @@ var definition = rotini.Definition{
 					Arguments: []rotini.ArgDef{
 						{Name: "client", Type: "string", Required: true, Enum: []string{"claude-desktop", "claude-code", "cursor", "vscode"}},
 					},
-					Inputs: reflect.TypeFor[RotiniMcpConfigListInputs](),
+					Inputs: rotiniTypeOf((*RotiniMcpConfigListInputs)(nil)),
 					Usage:  "rotini-mcp config list [flags] <client>",
 				},
 			},
@@ -108,13 +108,13 @@ var definition = rotini.Definition{
 			Arguments: []rotini.ArgDef{
 				{Name: "command", Type: "[]string", Variadic: true, Complete: rotini.Completion{Kind: "command"}},
 			},
-			Inputs: reflect.TypeFor[RotiniMcpHelpInputs](),
+			Inputs: rotiniTypeOf((*RotiniMcpHelpInputs)(nil)),
 			Usage:  "rotini-mcp help [command...]",
 		},
 		{Name: "version",
 			Handler: "RotiniMcpVersion",
 			Summary: "print version",
-			Inputs:  reflect.TypeFor[RotiniMcpVersionInputs](),
+			Inputs:  rotiniTypeOf((*RotiniMcpVersionInputs)(nil)),
 			Usage:   "rotini-mcp version",
 		},
 	},
@@ -296,6 +296,9 @@ func Usage(path ...string) (string, error) {
 
 // InputSettings is the generated descriptor the default input reader (rotini.InputReader) reads.
 var InputSettings = rotini.InputSettings{}
+
+// rotiniTypeOf is the reflect.Type of the type p points to.
+func rotiniTypeOf(p any) reflect.Type { return reflect.TypeOf(p).Elem() }
 
 // NewProgram builds the program from the generated command tree and handlers.
 func NewProgram() *rotini.Program {

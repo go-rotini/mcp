@@ -29,7 +29,9 @@ lint:
 	GOOS=plan9 GOARCH=amd64 go build . ./clients
 	GOOS=js GOARCH=wasm go build . ./clients
 	GOOS=wasip1 GOARCH=wasm go build . ./clients
-	$(call TOOL,go-licenses) check ./...
+	# segmentio/asm (through the MCP SDK) is under MIT No Attribution, which go-licenses
+	# doesn't recognize; it is MIT without the attribution requirement.
+	$(call TOOL,go-licenses) check --ignore github.com/segmentio/asm ./...
 	@$(MAKE) --no-print-directory vuln
 	@$(MAKE) --no-print-directory vuln-tools
 	@$(MAKE) --no-print-directory check-generated
