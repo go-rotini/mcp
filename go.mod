@@ -7,15 +7,15 @@ toolchain go1.27.2
 require (
 	github.com/go-rotini/jsonc v1.1.4
 	github.com/go-rotini/jsonschema v1.2.4
-	github.com/go-rotini/rotini v1.5.0
+	github.com/go-rotini/rotini v1.5.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/sys v0.49.0
 )
 
 require (
-	github.com/go-rotini/dotenv v1.0.2 // indirect
-	github.com/go-rotini/env v1.0.3 // indirect
-	github.com/go-rotini/recon v1.2.1 // indirect
+	github.com/go-rotini/dotenv v1.0.3 // indirect
+	github.com/go-rotini/env v1.0.4 // indirect
+	github.com/go-rotini/recon v1.2.2 // indirect
 	github.com/go-rotini/toml v1.2.2 // indirect
 	github.com/go-rotini/yaml v1.2.6 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
