@@ -8,8 +8,8 @@ github.com/go-rotini/jsonschema v1.2.5 h1:0X2DTDHdbxs+nSloAg2GzE/e0e8szGnz8pCA3L
 github.com/go-rotini/jsonschema v1.2.5/go.mod h1:pnPtnNy9pJf175WiaMrO5f6VP+KuwHgv9ZpMuFnzugw=
 github.com/go-rotini/recon v1.2.4 h1:HqaK5KgqF0Mdj8tVKrRc5oCAaf3geQoIb+RuWdP4mc0=
 github.com/go-rotini/recon v1.2.4/go.mod h1:AHDv0XC51Ox+dHKwyC9ZZ6J0sMwp3bkbzZhGW+de5wQ=
-github.com/go-rotini/rotini v1.7.1 h1:tZB2HdjlfLC8AKIutSBHdFsSTWnDclIa+RXFgCc9tHM=
-github.com/go-rotini/rotini v1.7.1/go.mod h1:+gXahKwxfQ2dgvH5lSGnecl1/GIARsGVSbw5+uQK4L8=
+github.com/go-rotini/rotini v1.7.2 h1:QIj2plxZI/KvfAsXIcmk9XqbU9zFNwN03QaykWEr9x0=
+github.com/go-rotini/rotini v1.7.2/go.mod h1:+gXahKwxfQ2dgvH5lSGnecl1/GIARsGVSbw5+uQK4L8=
 github.com/go-rotini/toml v1.2.2 h1:vbx1JGIVWlWMHBHQhK62x+IluvkNBr5jzvdhVC+nb+I=
 github.com/go-rotini/toml v1.2.2/go.mod h1:5R61YyC6cmJ+WcDJRaymjEsYgb2eV5yzJjfibtsg60k=
 github.com/go-rotini/yaml v1.2.6 h1:nljltjKRpj4h94lF0xUwFuZ0sWboDXYsZJOwZlImPgA=
