@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,11 +28,24 @@ func runCLI(t *testing.T, dir string, args ...string) (code int, stdout, stderr 
 	return code, out.String(), errOut.String()
 }
 
-func TestConfig_commandServer(t *testing.T) {
+// isolate points the user's files (home and config directory) at a temporary directory, so a
+// test never reads or writes the real ones.
+func isolate(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData"))
+}
+
+// A program serving itself: the client runs the program with the arguments after it.
+func TestAdd_selfServing(t *testing.T) {
+	isolate(t)
 	dir := t.TempDir()
-	code, out, errOut := runCLI(t, dir, "config", "enable", "claude-code", "tasks", "--command", "taskr", "--arg", "mcp", "--env", "TASKR_TOKEN=x=y")
-	if code != 0 || !strings.Contains(out, "added tasks to") {
-		t.Fatalf("enable: %d %q %q", code, out, errOut)
+	code, out, errOut := runCLI(t, dir, "add", "claude-code", "taskr", "mcp", "--env", "TASKR_TOKEN=x=y")
+	if code != 0 || !strings.Contains(out, "added taskr to") {
+		t.Fatalf("add: %d %q %q", code, out, errOut)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, ".mcp.json"))
 	if err != nil {
@@ -47,44 +61,63 @@ func TestConfig_commandServer(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	s := doc.MCPServers["tasks"]
+	s := doc.MCPServers["taskr"]
 	if s.Command != "taskr" || strings.Join(s.Args, " ") != "mcp" || s.Env["TASKR_TOKEN"] != "x=y" {
 		t.Fatalf("entry = %+v", s)
 	}
-	code, out, _ = runCLI(t, dir, "config", "list", "claude-code")
-	if code != 0 || out != "tasks\ttaskr mcp\n" {
+	code, out, _ = runCLI(t, dir, "list", "claude-code")
+	if want := []string{"claude-code", "project", "taskr", "taskr", "mcp"}; code != 0 || !slices.Equal(strings.Fields(out), want) {
 		t.Fatalf("list: %d %q", code, out)
 	}
-	code, out, _ = runCLI(t, dir, "config", "disable", "claude-code", "tasks")
-	if code != 0 || !strings.Contains(out, "removed tasks") {
-		t.Fatalf("disable: %d %q", code, out)
+	code, out, _ = runCLI(t, dir, "remove", "claude-code", "taskr")
+	if code != 0 || !strings.Contains(out, "removed taskr") {
+		t.Fatalf("remove: %d %q", code, out)
 	}
-	code, out, _ = runCLI(t, dir, "config", "disable", "claude-code", "tasks")
-	if code != 0 || !strings.Contains(out, "no server named tasks") {
-		t.Fatalf("disable again: %d %q", code, out)
+	code, out, _ = runCLI(t, dir, "remove", "claude-code", "taskr")
+	if code != 0 || !strings.Contains(out, "no server named taskr") {
+		t.Fatalf("remove again: %d %q", code, out)
 	}
 }
 
-func TestConfig_serveServer(t *testing.T) {
+// With only the program, the client runs rotini-mcp serve; the tools file defaults to
+// tools/mcp.json and the server is named after the program.
+func TestAdd_served(t *testing.T) {
+	isolate(t)
 	dir := t.TempDir()
-	for _, f := range []string{"mcp.json", "taskr"} {
+	if err := os.MkdirAll(filepath.Join(dir, "tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"tools/mcp.json", "taskr"} {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte("{}"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	code, _, errOut := runCLI(t, dir, "config", "enable", "cursor", "taskr", "--scope", "project", "--tools", "mcp.json", "--bin", "./taskr")
+	code, _, errOut := runCLI(t, dir, "add", "cursor", "./taskr", "--scope", "project")
 	if code != 0 {
-		t.Fatalf("enable: %d %q", code, errOut)
+		t.Fatalf("add: %d %q", code, errOut)
 	}
-	code, out, _ := runCLI(t, dir, "config", "list", "cursor", "--scope", "project")
-	want := " serve --tools " + filepath.Join(dir, "mcp.json") + " --bin " + filepath.Join(dir, "taskr") + "\n"
-	if code != 0 || !strings.HasPrefix(out, "taskr\t") || !strings.HasSuffix(out, want) {
+	code, out, _ := runCLI(t, dir, "list", "--scope", "project")
+	want := " serve " + filepath.Join(dir, "taskr") + " --tools " + filepath.Join(dir, "tools", "mcp.json") + "\n"
+	if code != 0 || !strings.HasPrefix(out, "cursor") || !strings.Contains(out, " taskr ") || !strings.HasSuffix(out, want) {
 		t.Fatalf("list: %d %q, want it to end %q", code, out, want)
+	}
+	code, _, _ = runCLI(t, dir, "add", "cursor", "./taskr", "--scope", "project", "--name", "dev")
+	if code != 0 {
+		t.Fatal("add --name failed")
+	}
+	code, out, _ = runCLI(t, dir, "remove", "cursor", "./taskr", "--scope", "project")
+	if code != 0 || !strings.Contains(out, "removed taskr") {
+		t.Fatalf("remove by program: %d %q", code, out)
+	}
+	code, out, _ = runCLI(t, dir, "list", "cursor", "--scope", "project")
+	if code != 0 || !strings.Contains(out, " dev ") || strings.Contains(out, " taskr ") {
+		t.Fatalf("list after remove: %d %q", code, out)
 	}
 }
 
-// --permissions turns the tools' annotations into Claude Code rules, and disable takes them away.
-func TestConfig_permissions(t *testing.T) {
+// --permissions turns the tools' annotations into Claude Code rules, and remove takes them away.
+func TestAdd_permissions(t *testing.T) {
+	isolate(t)
 	dir := t.TempDir()
 	tools := `{"tools":[
   {"name":"notes_list","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true},"_meta":{"dev.rotini/invoke":{"path":["list"]}}},
@@ -98,9 +131,9 @@ func TestConfig_permissions(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "notes"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errOut := runCLI(t, dir, "config", "enable", "claude-code", "notes", "--tools", "mcp.json", "--bin", "./notes", "--permissions")
+	code, out, errOut := runCLI(t, dir, "add", "claude-code", "./notes", "mcp", "--tools", "mcp.json", "--permissions")
 	if code != 0 || !strings.Contains(out, "1 allowed, 1 asked") {
-		t.Fatalf("enable: %d %q %q", code, out, errOut)
+		t.Fatalf("add: %d %q %q", code, out, errOut)
 	}
 	settings := filepath.Join(dir, ".claude", "settings.json")
 	var got struct {
@@ -120,17 +153,18 @@ func TestConfig_permissions(t *testing.T) {
 		t.Errorf("rules = %+v", got.Permissions)
 	}
 
-	code, out, _ = runCLI(t, dir, "config", "disable", "claude-code", "notes")
+	code, out, _ = runCLI(t, dir, "remove", "claude-code", "notes")
 	if code != 0 || !strings.Contains(out, "removed the tool rules for notes") {
-		t.Fatalf("disable: %d %q", code, out)
+		t.Fatalf("remove: %d %q", code, out)
 	}
 	if b, _ := os.ReadFile(settings); strings.Contains(string(b), "mcp__notes__") || strings.Contains(string(b), "permissions") {
-		t.Errorf("rules left after disable:\n%s", b)
+		t.Errorf("rules left after remove:\n%s", b)
 	}
 }
 
-// A bare --bin is a name on PATH, as for serve.
-func TestConfig_serveServerBinOnPath(t *testing.T) {
+// A bare program is a name on PATH, as for serve, and is written as the path it resolves to.
+func TestAdd_programOnPath(t *testing.T) {
+	isolate(t)
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Skip("no go on PATH")
@@ -139,17 +173,60 @@ func TestConfig_serveServerBinOnPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "mcp.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, _, errOut := runCLI(t, dir, "config", "enable", "claude-code", "g", "--tools", "mcp.json", "--bin", "go")
+	code, _, errOut := runCLI(t, dir, "add", "claude-code", "go", "--tools", "mcp.json")
 	if code != 0 {
-		t.Fatalf("enable: %d %q", code, errOut)
+		t.Fatalf("add: %d %q", code, errOut)
 	}
-	code, out, _ := runCLI(t, dir, "config", "list", "claude-code")
-	if want := " --bin " + goBin + "\n"; code != 0 || !strings.HasSuffix(out, want) {
-		t.Fatalf("list: %d %q, want it to end %q", code, out, want)
+	code, out, _ := runCLI(t, dir, "list", "claude-code")
+	if want := " serve " + goBin + " --tools "; code != 0 || !strings.Contains(out, want) {
+		t.Fatalf("list: %d %q, want it to contain %q", code, out, want)
 	}
-	code, _, errOut = runCLI(t, dir, "config", "enable", "claude-code", "g", "--tools", "mcp.json", "--bin", "no-such-program-on-path")
+	code, _, errOut = runCLI(t, dir, "add", "claude-code", "no-such-program-on-path", "--tools", "mcp.json")
 	if code == 0 || !strings.Contains(errOut, "no-such-program-on-path") {
 		t.Fatalf("a missing program: %d %q", code, errOut)
+	}
+}
+
+// A missing tools file says where one comes from.
+func TestAdd_noToolsFile(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut := runCLI(t, dir, "add", "claude-code", "./notes")
+	if code == 0 || !strings.Contains(errOut, "tools feature") {
+		t.Fatalf("%d %q", code, errOut)
+	}
+}
+
+// A rotini-mcp in Go's build cache is written as `go -C <module> tool rotini-mcp`, since the
+// cache can be cleaned.
+func TestUnder(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		path, dir string
+		want      bool
+	}{
+		{filepath.Join(root, "cache", "ab", "x-d", "rotini-mcp"), filepath.Join(root, "cache"), true},
+		{filepath.Join(root, "bin", "rotini-mcp"), filepath.Join(root, "cache"), false},
+		{filepath.Join(root, "cache-other", "rotini-mcp"), filepath.Join(root, "cache"), false},
+		{filepath.Join(root, "rotini-mcp"), "", false},
+	} {
+		if got := under(tc.path, tc.dir); got != tc.want {
+			t.Errorf("under(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
+		}
+	}
+}
+
+func TestServerName(t *testing.T) {
+	for in, want := range map[string]string{"./bin/notes": "notes", "notes": "notes", `C:\bin\notes.exe`: "notes", "notes.exe": "notes"} {
+		if runtime.GOOS != "windows" && strings.Contains(in, `\`) {
+			continue
+		}
+		if got := serverName(in); got != want {
+			t.Errorf("serverName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -174,17 +251,17 @@ func TestRefuseBatchFile(t *testing.T) {
 	}
 }
 
-func TestConfig_errors(t *testing.T) {
+func TestCLI_errors(t *testing.T) {
+	isolate(t)
 	dir := t.TempDir()
 	for name, args := range map[string][]string{
-		"nothing":            {"config", "enable", "claude-code", "x"},
-		"both":               {"config", "enable", "claude-code", "x", "--command", "c", "--tools", "go.mod", "--bin", "go.mod"},
-		"bad scope":          {"config", "enable", "claude-desktop", "x", "--command", "c", "--scope", "project"},
-		"client":             {"config", "list", "emacs"},
-		"env":                {"config", "enable", "claude-code", "x", "--command", "c", "--env", "NOEQUALS"},
-		"tools with command": {"config", "enable", "claude-code", "x", "--command", "c", "--tools", "go.mod"},
-		"permissions client": {"config", "enable", "cursor", "x", "--command", "c", "--tools", "go.mod", "--permissions"},
-		"permissions tools":  {"config", "enable", "claude-code", "x", "--command", "c", "--permissions"},
+		"no program":         {"add", "claude-code"},
+		"bad scope":          {"add", "claude-desktop", "c", "mcp", "--scope", "project"},
+		"client":             {"list", "emacs"},
+		"env":                {"add", "claude-code", "c", "mcp", "--env", "NOEQUALS"},
+		"permissions client": {"add", "cursor", "c", "mcp", "--tools", "go.mod", "--permissions"},
+		"permissions tools":  {"add", "claude-code", "c", "mcp", "--permissions"},
+		"serve no program":   {"serve"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "go.mod"), nil, 0o600); err != nil {
@@ -198,7 +275,7 @@ func TestConfig_errors(t *testing.T) {
 }
 
 func TestServe_unknownTool(t *testing.T) {
-	code, _, errOut := runCLI(t, "../../..", "serve", "--tools", "testdata/fake.mcp.json", "--bin", "go", "--tool", "nope")
+	code, _, errOut := runCLI(t, "../../..", "serve", "go", "--tools", "testdata/fake.mcp.json", "--tool", "nope")
 	if code == 0 || !strings.Contains(errOut, "no such tool") {
 		t.Fatalf("%d %q", code, errOut)
 	}
@@ -225,7 +302,7 @@ func TestServe_stdio(t *testing.T) {
 			WithStderr(io.Discard).
 			WithContext(ctx).
 			WithExit(func(int) {}).
-			Run([]string{"serve", "--tools", "testdata/fake.mcp.json", "--bin", echo, "--tool", "fake_plain"})
+			Run([]string{"serve", echo, "--tools", "testdata/fake.mcp.json", "--tool", "fake_plain"})
 		done <- code
 	}()
 	cs, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "0"}, nil).
@@ -251,34 +328,35 @@ func TestServe_stdio(t *testing.T) {
 	}
 }
 
-// A --command or --bin path is made absolute and must exist; a project file that ends up with
-// this machine's paths gets a note.
-func TestConfig_paths(t *testing.T) {
+// A program path is made absolute and must exist; a project file that ends up with this
+// machine's paths gets a note.
+func TestAdd_paths(t *testing.T) {
+	isolate(t)
 	dir := t.TempDir()
 	for _, f := range []string{"mcp.json", "taskr"} {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte("{}"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	code, _, errOut := runCLI(t, dir, "config", "enable", "claude-code", "t", "--command", "./taskr")
+	code, _, errOut := runCLI(t, dir, "add", "claude-code", "./taskr", "mcp")
 	if code != 0 || !strings.Contains(errOut, "paths on this machine") {
-		t.Fatalf("enable: %d %q", code, errOut)
+		t.Fatalf("add: %d %q", code, errOut)
 	}
-	code, out, _ := runCLI(t, dir, "config", "list", "claude-code")
-	if want := "t\t" + filepath.Join(dir, "taskr") + "\n"; code != 0 || out != want {
-		t.Fatalf("list: %d %q, want %q", code, out, want)
+	code, out, _ := runCLI(t, dir, "list", "claude-code")
+	if want := "taskr  " + filepath.Join(dir, "taskr") + " mcp\n"; code != 0 || !strings.HasSuffix(out, want) {
+		t.Fatalf("list: %d %q, want it to end %q", code, out, want)
 	}
-	code, _, errOut = runCLI(t, dir, "config", "enable", "claude-code", "bare", "--command", "taskr")
+	code, _, errOut = runCLI(t, dir, "add", "claude-code", "taskr", "mcp", "--name", "bare")
 	if code != 0 || strings.Contains(errOut, "paths on this machine") {
-		t.Fatalf("a bare command: %d %q", code, errOut)
+		t.Fatalf("a bare program: %d %q", code, errOut)
 	}
 	for name, args := range map[string][]string{
-		"command": {"--command", "./nope"},
-		"bin":     {"--tools", "mcp.json", "--bin", "./nope"},
-		"bin dir": {"--tools", "mcp.json", "--bin", "."},
+		"self":       {"./nope", "mcp"},
+		"served":     {"./nope", "--tools", "mcp.json"},
+		"served dir": {".", "--tools", "mcp.json"},
 	} {
-		code, _, errOut := runCLI(t, dir, append([]string{"config", "enable", "claude-code", "x"}, args...)...)
-		if code == 0 || !strings.Contains(errOut, "nope") && name != "bin dir" {
+		code, _, errOut := runCLI(t, dir, append([]string{"add", "claude-code"}, args...)...)
+		if code == 0 || !strings.Contains(errOut, "nope") && name != "served dir" {
 			t.Errorf("%s: %d %q, want a refusal", name, code, errOut)
 		}
 	}

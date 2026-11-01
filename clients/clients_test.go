@@ -45,12 +45,12 @@ func TestPaths(t *testing.T) {
 	}
 }
 
-func TestEnableListDisable(t *testing.T) {
+func TestAddListRemove(t *testing.T) {
 	d := testDirs(t)
 	s := Server{Command: "/bin/taskr", Args: []string{"mcp"}, Env: map[string]string{"TASKR_TOKEN": "x"}}
 	for _, c := range Clients() {
 		t.Run(string(c), func(t *testing.T) {
-			path, err := Enable(c, "", d, "taskr", s)
+			path, err := Add(c, "", d, "taskr", s)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,21 +76,21 @@ func TestEnableListDisable(t *testing.T) {
 			if !strings.Contains(string(b), key) {
 				t.Errorf("%s: no %s key:\n%s", path, key, b)
 			}
-			if _, err := Enable(c, "", d, "other", Server{Command: "o"}); err != nil {
+			if _, err := Add(c, "", d, "other", Server{Command: "o"}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(path + ".bak"); err != nil {
 				t.Errorf("no backup before rewriting: %v", err)
 			}
-			_, removed, err := Disable(c, "", d, "taskr")
+			_, removed, err := Remove(c, "", d, "taskr")
 			if err != nil || !removed {
-				t.Fatalf("disable: %v %v", removed, err)
+				t.Fatalf("remove: %v %v", removed, err)
 			}
 			_, servers, _ = List(c, "", d)
 			if _, ok := servers["taskr"]; ok || len(servers) != 1 {
-				t.Errorf("after disable: %v", servers)
+				t.Errorf("after remove: %v", servers)
 			}
-			if _, removed, _ := Disable(c, "", d, "taskr"); removed {
+			if _, removed, _ := Remove(c, "", d, "taskr"); removed {
 				t.Error("removed a server twice")
 			}
 		})
@@ -107,7 +107,7 @@ func TestKeepsOtherKeysAndReadsComments(t *testing.T) {
 	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Enable(VSCode, Project, d, "taskr", Server{Command: "t"}); err != nil {
+	if _, err := Add(VSCode, Project, d, "taskr", Server{Command: "t"}); err != nil {
 		t.Fatal(err)
 	}
 	var doc map[string]any
@@ -130,13 +130,13 @@ func TestKeepsOtherKeysAndReadsComments(t *testing.T) {
 
 func TestErrors(t *testing.T) {
 	d := testDirs(t)
-	if _, err := Enable(ClaudeCode, "", d, "", Server{Command: "x"}); err == nil {
-		t.Error("enabled a server with no name")
+	if _, err := Add(ClaudeCode, "", d, "", Server{Command: "x"}); err == nil {
+		t.Error("added a server with no name")
 	}
 	path, _ := ClaudeCode.Path("", d)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	_ = os.WriteFile(path, []byte(`{"mcpServers": []}`), 0o600)
-	if _, err := Enable(ClaudeCode, "", d, "x", Server{Command: "x"}); err == nil {
+	if _, err := Add(ClaudeCode, "", d, "x", Server{Command: "x"}); err == nil {
 		t.Error("accepted mcpServers that isn't an object")
 	}
 	_ = os.WriteFile(path, []byte(`not json`), 0o600)
@@ -160,11 +160,11 @@ func TestRewriteKeepsValues(t *testing.T) {
 	if err := os.WriteFile(path, []byte(orig), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Enable(ClaudeCode, "", d, "first", Server{Command: "run&go", Env: map[string]string{"Q": "<&>"}}); err != nil {
+	if _, err := Add(ClaudeCode, "", d, "first", Server{Command: "run&go", Env: map[string]string{"Q": "<&>"}}); err != nil {
 		t.Fatal(err)
 	}
 	afterFirst, _ := os.ReadFile(path)
-	if _, err := Enable(ClaudeCode, "", d, "second", Server{Command: "s"}); err != nil {
+	if _, err := Add(ClaudeCode, "", d, "second", Server{Command: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(path)
@@ -196,7 +196,7 @@ func TestRewriteKeepsValues(t *testing.T) {
 
 // A configuration file that is a symbolic link (a dotfiles setup) keeps the link: the file it
 // links to is the one rewritten.
-func TestEnableThroughSymlink(t *testing.T) {
+func TestAddThroughSymlink(t *testing.T) {
 	d := testDirs(t)
 	dotfiles := t.TempDir()
 	target := filepath.Join(dotfiles, "cursor-mcp.json")
@@ -213,7 +213,7 @@ func TestEnableThroughSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("no symbolic links here: %v", err)
 	}
-	if _, err := Enable(Cursor, User, d, "taskr", Server{Command: "taskr"}); err != nil {
+	if _, err := Add(Cursor, User, d, "taskr", Server{Command: "taskr"}); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -231,7 +231,7 @@ func TestEnableThroughSymlink(t *testing.T) {
 }
 
 // Enabling a server again keeps the entry's other settings, and the file keeps its key order.
-func TestEnableKeepsEntrySettingsAndOrder(t *testing.T) {
+func TestAddKeepsEntrySettingsAndOrder(t *testing.T) {
 	d := testDirs(t)
 	path, err := Cursor.Path(Project, d)
 	if err != nil {
@@ -252,7 +252,7 @@ func TestEnableKeepsEntrySettingsAndOrder(t *testing.T) {
 	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Enable(Cursor, Project, d, "taskr", Server{Command: "taskr", Args: []string{"mcp"}}); err != nil {
+	if _, err := Add(Cursor, Project, d, "taskr", Server{Command: "taskr", Args: []string{"mcp"}}); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(path)

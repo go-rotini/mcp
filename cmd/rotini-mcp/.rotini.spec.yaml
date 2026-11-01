@@ -22,22 +22,25 @@ command:
       schema: { type: bool }
   commands:
     - name: serve
-      summary: serve a tools file over MCP on stdio
+      summary: serve a program's tools over MCP on stdio
       description: >-
-        Serve the tools in a tools file over MCP on stdio. Each call runs the program with the
-        command line its arguments make, in the server's environment, and returns what it
-        prints.
+        Serve a rotini program's tools over MCP on stdio. The tools are read from the tools file
+        the program's tools feature writes; each call runs the program with the command line its
+        arguments make, in the server's environment, and returns what it prints.
       examples:
-        - rotini-mcp serve --tools tools/mcp.json --bin ./taskr
+        - run: rotini-mcp serve ./bin/notes
+          summary: serve tools/mcp.json, running ./bin/notes for each call
+        - run: rotini-mcp serve notes --tools build/tools/mcp.json --tool notes_list
+          summary: serve one tool of another tools file, running notes from PATH
+      arguments:
+        - name: program
+          summary: the program to run for each call; a path, or a name on PATH
+          schema: { type: string, required: true }
       flags:
         - name: tools
-          summary: the tools file Rotini's tools feature writes
+          summary: the tools file the program's tools feature writes
           identifiers: [--tools]
-          schema: { type: existingfile, required: true }
-        - name: bin
-          summary: the program to run for each call
-          identifiers: [--bin]
-          schema: { type: string, required: true }
+          schema: { type: string, default: tools/mcp.json }
         - name: env
           summary: a variable to add to the program's environment (KEY=value)
           identifiers: [--env]
@@ -49,120 +52,132 @@ command:
         - name: timeout
           summary: stop a call that runs longer than this (0 for no limit)
           identifiers: [--timeout]
+          group: Limits
           schema: { type: duration, default: 0s }
         - name: grace
           summary: how long a stopped call has between SIGTERM and being killed (0 kills it at once)
           identifiers: [--grace]
+          group: Limits
           schema: { type: duration, default: 5s }
         - name: output-limit
           summary: the most output a call may write on each of stdout and stderr
           identifiers: [--output-limit]
+          group: Limits
           schema: { type: bytesize, default: 10Mi }
         - name: concurrency
           summary: run at most this many calls at once; more wait their turn (0 for no limit)
           identifiers: [--concurrency]
+          group: Limits
           schema: { type: int, default: 0 }
         - name: revision
-          summary: the MCP revision to serve the tools for
+          summary: the newest MCP revision to serve the tools for
           identifiers: [--revision]
+          group: Protocol
           schema: { type: string, enum: ['2026-07-28', '2025-11-25'], default: '2026-07-28' }
         - name: success_stderr
           summary: "where a successful call's stderr goes: content (shown, and in _meta) or meta (only in _meta)"
           identifiers: [--success-stderr]
+          group: Protocol
           schema: { type: string, enum: [content, meta], default: content }
-    - name: config
-      summary: add, remove or list servers in an MCP client's configuration
+    - name: add
+      summary: add a program's server to an MCP client
       description: >-
-        Add, remove or list MCP servers in an MCP client's configuration file. A file is backed
-        up to <file>.bak before it is rewritten, replacing an earlier backup. The rewrite keeps
-        every other setting, but comments are not kept.
-      commands:
-        - name: enable
-          summary: add a server to a client's configuration
-          description: >-
-            Add a server to a client's configuration. With --tools and --bin, the client runs
-            rotini-mcp serve for that program; with --command, it runs that command (such as a
-            program that serves its own tools). The entry names this rotini-mcp executable, so
-            run an installed rotini-mcp, not one from go run. --env values are written into the
-            client's file, which for a project's file is often committed; keep secrets out of
-            them. A --command or --bin path is written as an absolute path. A server already in the
-            file keeps its other settings. The file is backed up to <file>.bak, and comments in it
-            are not kept.
+        Add an MCP server for a program to a client's configuration. With only the program, the
+        client runs rotini-mcp serve for it; with arguments after the program, the client runs
+        the program with them, for a program that serves its own tools (such as "notes mcp").
+        Paths are written as absolute paths. The server is named after the program unless --name
+        says otherwise; a server already there with that name is updated, keeping its other
+        settings.
 
-            For claude-code, --permissions also writes rules for the server's tools into the
-            project's .claude/settings.json, from the tools file's annotations: read-only tools run
-            without asking, destructive tools always ask, and the rest are left to the client. It
-            replaces the rules an earlier --permissions wrote for this server and keeps every other
-            rule. With --command, give --tools too, for the annotations.
-          examples:
-            - rotini-mcp config enable claude-desktop taskr --tools tools/mcp.json --bin ./taskr
-            - rotini-mcp config enable cursor taskr --command taskr --arg mcp
-            - rotini-mcp config enable claude-code taskr --tools tools/mcp.json --bin ./taskr --permissions
-          arguments:
-            - name: client
-              summary: the client
-              schema: { type: string, required: true, enum: [claude-desktop, claude-code, cursor, vscode] }
-            - name: name
-              summary: the server's name in the client
-              schema: { type: string, required: true }
-          flags:
-            - name: tools
-              summary: the tools file to serve
-              identifiers: [--tools]
-              schema: { type: existingfile }
-            - name: bin
-              summary: the program to run for each call; a path, or a name on PATH
-              identifiers: [--bin]
-              schema: { type: string }
-            - name: command
-              summary: the command the client runs instead of rotini-mcp serve
-              identifiers: [--command]
-              schema: { type: string }
-            - name: arg
-              summary: an argument for --command
-              identifiers: [--arg]
-              schema: { type: '[]string' }
-            - name: env
-              summary: a variable the client sets for the server (KEY=value)
-              identifiers: [--env]
-              schema: { type: '[]string' }
-            - name: scope
-              summary: the user's file or the project's (by default the client's first)
-              identifiers: [--scope]
-              schema: { type: string, enum: [user, project] }
-            - name: permissions
-              summary: "claude-code: also allow the read-only tools and ask before the destructive ones"
-              identifiers: [--permissions]
-              schema: { type: bool }
-        - name: disable
-          summary: remove a server from a client's configuration
-          description: >-
-            Remove a server from a client's configuration. The file is backed up to <file>.bak,
-            and comments in it are not kept. For claude-code, the server's tool rules in the
-            project's .claude/settings.json go too.
-          arguments:
-            - name: client
-              summary: the client
-              schema: { type: string, required: true, enum: [claude-desktop, claude-code, cursor, vscode] }
-            - name: name
-              summary: the server's name in the client
-              schema: { type: string, required: true }
-          flags:
-            - name: scope
-              summary: the user's file or the project's (by default the client's first)
-              identifiers: [--scope]
-              schema: { type: string, enum: [user, project] }
-        - name: list
-          summary: list the servers in a client's configuration
-          arguments:
-            - name: client
-              summary: the client
-              schema: { type: string, required: true, enum: [claude-desktop, claude-code, cursor, vscode] }
-          flags:
-            - name: scope
-              summary: the user's file or the project's (by default the client's first)
-              identifiers: [--scope]
-              schema: { type: string, enum: [user, project] }
+
+        The file is backed up to <file>.bak, and comments in it are not kept. --env values are
+        written into the file, which for a project is often committed; keep secrets out of
+        them. Run an installed rotini-mcp, or one the module declares as a tool (go tool), so
+        the path the client runs stays valid.
+
+
+        For claude-code, --permissions also writes rules for the tools into the project's
+        .claude/settings.json, from the tools file's annotations: read-only tools run without
+        asking, destructive tools always ask, and the rest are left to the client.
+      examples:
+        - run: rotini-mcp add claude-code ./bin/notes
+          summary: Claude Code runs rotini-mcp serve ./bin/notes
+        - run: rotini-mcp add claude-code ./bin/notes mcp
+          summary: Claude Code runs ./bin/notes mcp, a program serving itself
+        - run: rotini-mcp add claude-code ./bin/notes --permissions
+          summary: also allow the read-only tools and ask before the destructive ones
+        - run: rotini-mcp add cursor notes --scope project --name notes-dev
+          summary: notes from PATH, in the project's Cursor file, named notes-dev
+      arguments:
+        - name: client
+          summary: the client
+          schema: { type: string, required: true, enum: [claude-code, claude-desktop, cursor, vscode] }
+        - name: program
+          summary: the program; a path, or a name on PATH
+          schema: { type: string, required: true }
+        - name: args
+          summary: the arguments the client runs the program with, for a program serving itself
+          schema: { type: '[]string' }
+      flags:
+        - name: name
+          summary: the server's name in the client (default the program's name)
+          identifiers: [--name]
+          schema: { type: string }
+        - name: tools
+          summary: the tools file the program's tools feature writes
+          identifiers: [--tools]
+          schema: { type: string, default: tools/mcp.json }
+        - name: env
+          summary: a variable the client sets for the server (KEY=value)
+          identifiers: [--env]
+          schema: { type: '[]string' }
+        - name: scope
+          summary: the user's file or the project's (default the client's first)
+          identifiers: [--scope]
+          schema: { type: string, enum: [user, project] }
+        - name: permissions
+          summary: "claude-code: also allow the read-only tools and ask before the destructive ones"
+          identifiers: [--permissions]
+          schema: { type: bool }
+    - name: remove
+      summary: remove a server from an MCP client
+      description: >-
+        Remove a server from a client's configuration, by its name or by the program it was
+        added for. For claude-code, the server's tool rules in the project's
+        .claude/settings.json go too. The file is backed up to <file>.bak, and comments in it
+        are not kept.
+      examples:
+        - rotini-mcp remove claude-code notes
+        - rotini-mcp remove claude-code ./bin/notes
+      arguments:
+        - name: client
+          summary: the client
+          schema: { type: string, required: true, enum: [claude-code, claude-desktop, cursor, vscode] }
+        - name: name
+          summary: the server's name, or the program it was added for
+          schema: { type: string, required: true }
+      flags:
+        - name: scope
+          summary: the user's file or the project's (default the client's first)
+          identifiers: [--scope]
+          schema: { type: string, enum: [user, project] }
+    - name: list
+      summary: list the servers in MCP clients' configuration
+      description: >-
+        List the servers in every client's configuration, or in one client's: each line is the
+        client, the file's scope, the server's name and the command the client runs.
+      examples:
+        - rotini-mcp list
+        - rotini-mcp list claude-code
+      arguments:
+        - name: client
+          summary: the client (default every client)
+          schema: { type: string, enum: [claude-code, claude-desktop, cursor, vscode] }
+      flags:
+        - name: scope
+          summary: only the user's files or only the project's
+          identifiers: [--scope]
+          schema: { type: string, enum: [user, project] }
     - name: help
       summary: print help
       description: Print help for a command.

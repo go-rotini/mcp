@@ -116,11 +116,11 @@ func (c Client) serversKey() string {
 	return "mcpServers"
 }
 
-// Enable adds the server called name to the client's file, creating the file if it doesn't
+// Add adds the server called name to the client's file, creating the file if it doesn't
 // exist. When the file already has a server of that name, its command, args and type are set
 // and its env replaced when s has one; its other settings (such as disabled, autoApprove, cwd
 // or timeout) are kept. It returns the file's path.
-func Enable(c Client, scope Scope, dirs Dirs, name string, s Server) (path string, err error) {
+func Add(c Client, scope Scope, dirs Dirs, name string, s Server) (path string, err error) {
 	if name == "" || s.Command == "" {
 		return "", errors.New("clients: a server needs a name and a command")
 	}
@@ -157,9 +157,9 @@ func Enable(c Client, scope Scope, dirs Dirs, name string, s Server) (path strin
 	return path, write(path, doc, exists)
 }
 
-// Disable removes the server called name from the client's file. It reports whether the server
+// Remove removes the server called name from the client's file. It reports whether the server
 // was there; a missing file has no servers.
-func Disable(c Client, scope Scope, dirs Dirs, name string) (path string, removed bool, err error) {
+func Remove(c Client, scope Scope, dirs Dirs, name string) (path string, removed bool, err error) {
 	path, err = c.Path(scope, dirs)
 	if err != nil {
 		return "", false, err
