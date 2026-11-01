@@ -38,11 +38,11 @@ func (*rotiniMcpAddHandler) Run(ctx context.Context, rtx *rotini.Context) error 
 		return fmt.Errorf("--permissions writes Claude Code's rules; it doesn't go with %s", a.Client)
 	}
 
-	server, err := serverEntry(ctx, rtx.Dir(), f, a)
+	server, program, err := serverEntry(ctx, rtx.Dir(), f, a)
 	if err != nil {
 		return err
 	}
-	name := cmp.Or(f.Name, serverName(a.Program))
+	name := cmp.Or(f.Name, serverName(program))
 	dirs := clients.Dirs{Project: rtx.Dir()}
 	path, err := clients.Add(client, clients.Scope(f.Scope), dirs, name, server)
 	if err != nil {
@@ -73,11 +73,12 @@ func (*rotiniMcpAddHandler) Run(ctx context.Context, rtx *rotini.Context) error 
 	return err
 }
 
-// serverEntry is how the client starts the server: the program with its arguments, for a program
-// serving itself, or rotini-mcp serve for the program and its tools file.
-func serverEntry(ctx context.Context, dir string, f RotiniMcpAddFlags, a RotiniMcpAddArguments) (clients.Server, error) {
+// serverEntry is how the client starts the server, and the name of the program it serves: the program
+// with its arguments, for a program serving itself; rotini-mcp serve for the program and its
+// tools file; or, without a program, rotini-mcp serve in dir, which builds it from source.
+func serverEntry(ctx context.Context, dir string, f RotiniMcpAddFlags, a RotiniMcpAddArguments) (server clients.Server, name string, err error) {
 	if err := checkEnv(f.Env); err != nil {
-		return clients.Server{}, err
+		return clients.Server{}, "", err
 	}
 	env := map[string]string{}
 	for _, kv := range f.Env {
@@ -87,26 +88,38 @@ func serverEntry(ctx context.Context, dir string, f RotiniMcpAddFlags, a RotiniM
 	if len(a.Args) > 0 {
 		command, err := commandPath(dir, a.Program)
 		if err != nil {
-			return clients.Server{}, err
+			return clients.Server{}, "", err
 		}
-		return clients.Server{Command: command, Args: a.Args, Env: env}, nil
+		return clients.Server{Command: command, Args: a.Args, Env: env}, a.Program, nil
 	}
-	if _, err := readTools(dir, f.Tools); err != nil {
-		return clients.Server{}, err
+	doc, err := readTools(dir, f.Tools)
+	if err != nil {
+		return clients.Server{}, "", err
 	}
 	tools, err := filepath.Abs(underDir(dir, f.Tools))
 	if err != nil {
-		return clients.Server{}, fmt.Errorf("resolve --tools: %w", err)
-	}
-	bin, err := program(dir, a.Program)
-	if err != nil {
-		return clients.Server{}, err
+		return clients.Server{}, "", fmt.Errorf("resolve --tools: %w", err)
 	}
 	command, args, err := selfCommand(ctx, dir)
 	if err != nil {
-		return clients.Server{}, err
+		return clients.Server{}, "", err
 	}
-	return clients.Server{Command: command, Args: append(args, "serve", bin, "--tools", tools), Env: env}, nil
+	if a.Program == "" {
+		p, err := programOf(doc)
+		if err != nil {
+			return clients.Server{}, "", err
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return clients.Server{}, "", err
+		}
+		return clients.Server{Command: command, Args: append(args, "serve", "-C", abs, "--tools", tools), Env: env}, p.Name, nil
+	}
+	bin, err := program(dir, a.Program)
+	if err != nil {
+		return clients.Server{}, "", err
+	}
+	return clients.Server{Command: command, Args: append(args, "serve", bin, "--tools", tools), Env: env}, a.Program, nil
 }
 
 // selfCommand is how a client runs this rotini-mcp: its executable's path, or, when that is in

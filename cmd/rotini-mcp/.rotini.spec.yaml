@@ -20,6 +20,12 @@ command:
       cascading: true
       short_circuit: true
       schema: { type: bool }
+    - name: dir
+      identifiers: [-C, --dir]
+      summary: run as if started in this directory
+      cascading: true
+      role: chdir
+      schema: { type: existingdir, placeholder: DIR }
   commands:
     - name: serve
       summary: serve a program's tools over MCP on stdio
@@ -27,15 +33,22 @@ command:
         Serve a rotini program's tools over MCP on stdio. The tools are read from the tools file
         the program's tools feature writes; each call runs the program with the command line its
         arguments make, in the server's environment, and returns what it prints.
+
+
+        Without a program, serve builds the program from source: the tools file names its main
+        package, and serve builds it with go build when it starts, then runs that build for
+        every call. Restart the server to pick up changes.
       examples:
+        - run: rotini-mcp serve
+          summary: build the program tools/mcp.json names from source, and serve it
         - run: rotini-mcp serve ./bin/notes
           summary: serve tools/mcp.json, running ./bin/notes for each call
         - run: rotini-mcp serve notes --tools build/tools/mcp.json --tool notes_list
           summary: serve one tool of another tools file, running notes from PATH
       arguments:
         - name: program
-          summary: the program to run for each call; a path, or a name on PATH
-          schema: { type: string, required: true }
+          summary: the program to run for each call; a path, or a name on PATH (default built from source)
+          schema: { type: string }
       flags:
         - name: tools
           summary: the tools file the program's tools feature writes
@@ -85,9 +98,10 @@ command:
         Add an MCP server for a program to a client's configuration. With only the program, the
         client runs rotini-mcp serve for it; with arguments after the program, the client runs
         the program with them, for a program that serves its own tools (such as "notes mcp").
-        Paths are written as absolute paths. The server is named after the program unless --name
-        says otherwise; a server already there with that name is updated, keeping its other
-        settings.
+        Without a program, the client runs rotini-mcp serve in this directory, which builds the
+        program from source. Paths are written as absolute paths. The server is named after the
+        program unless --name says otherwise; a server already there with that name is updated,
+        keeping its other settings.
 
 
         The file is backed up to <file>.bak, and comments in it are not kept. --env values are
@@ -100,6 +114,8 @@ command:
         .claude/settings.json, from the tools file's annotations: read-only tools run without
         asking, destructive tools always ask, and the rest are left to the client.
       examples:
+        - run: rotini-mcp add claude-code
+          summary: Claude Code runs rotini-mcp serve here, building the program from source
         - run: rotini-mcp add claude-code ./bin/notes
           summary: Claude Code runs rotini-mcp serve ./bin/notes
         - run: rotini-mcp add claude-code ./bin/notes mcp
@@ -113,8 +129,8 @@ command:
           summary: the client
           schema: { type: string, required: true, enum: [claude-code, claude-desktop, cursor, vscode] }
         - name: program
-          summary: the program; a path, or a name on PATH
-          schema: { type: string, required: true }
+          summary: the program; a path, or a name on PATH (default built from source)
+          schema: { type: string }
         - name: args
           summary: the arguments the client runs the program with, for a program serving itself
           schema: { type: '[]string' }
