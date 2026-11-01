@@ -37,14 +37,20 @@ func (*rotiniMcpServeHandler) Run(ctx context.Context, rtx *rotini.Context) erro
 	if err != nil {
 		return err
 	}
-	bin, err := program(rtx.Dir(), a.Program)
-	if err != nil {
-		return err
-	}
 	if err := checkEnv(f.Env); err != nil {
 		return err
 	}
 	if err := knownTools(doc, f.Tool); err != nil {
+		return err
+	}
+	var bin string
+	if a.Program == "" {
+		var remove func()
+		if bin, remove, err = buildProgram(ctx, rtx.Dir(), doc); err != nil {
+			return err
+		}
+		defer remove()
+	} else if bin, err = program(rtx.Dir(), a.Program); err != nil {
 		return err
 	}
 

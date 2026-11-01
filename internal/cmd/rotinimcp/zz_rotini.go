@@ -30,6 +30,7 @@ var definition = rotini.Definition{
 	Flags: []rotini.FlagDef{
 		{Name: "help", Identifiers: []string{"-h", "--help"}, Summary: "print help", Type: "bool", ShortCircuit: true},
 		{Name: "version", Identifiers: []string{"--version"}, Summary: "print version", Type: "bool", ShortCircuit: true},
+		{Name: "dir", Identifiers: []string{"-C", "--dir"}, Summary: "run as if started in this directory", Type: "existingdir", Complete: rotini.CompletionHint{Kind: "directory"}, Role: "chdir"},
 	},
 	Usage: "rotini-mcp [flags] <command>",
 	Commands: []rotini.CommandDef{
@@ -48,9 +49,9 @@ var definition = rotini.Definition{
 				{Name: "success_stderr", Identifiers: []string{"--success-stderr"}, Summary: "where a successful call's stderr goes: content (shown, and in _meta) or meta (only in _meta)", Type: "string", Default: "content", Enum: []string{"content", "meta"}},
 			},
 			Arguments: []rotini.ArgDef{
-				{Name: "program", Type: "string", Required: true},
+				{Name: "program", Type: "string"},
 			},
-			Usage: "rotini-mcp serve [flags] <program>",
+			Usage: "rotini-mcp serve [flags] [program]",
 		},
 		{Name: "add",
 			Handler: "RotiniMcpAdd",
@@ -64,10 +65,10 @@ var definition = rotini.Definition{
 			},
 			Arguments: []rotini.ArgDef{
 				{Name: "client", Type: "string", Required: true, Enum: []string{"claude-code", "claude-desktop", "cursor", "vscode"}},
-				{Name: "program", Type: "string", Required: true},
+				{Name: "program", Type: "string"},
 				{Name: "args", Type: "[]string", Variadic: true},
 			},
-			Usage: "rotini-mcp add [flags] <client> <program> [args...]",
+			Usage: "rotini-mcp add [flags] <client> [program] [args...]",
 		},
 		{Name: "remove",
 			Handler: "RotiniMcpRemove",
@@ -131,6 +132,8 @@ type RotiniMcpFlags struct {
 	Help bool `rotini:"help"`
 	// print version
 	Version bool `rotini:"version"`
+	// run as if started in this directory
+	Dir string `rotini:"dir"`
 }
 
 type RotiniMcpArguments struct{}
@@ -160,7 +163,7 @@ type RotiniMcpAddFlags struct {
 type RotiniMcpAddArguments struct {
 	// the client
 	Client string `rotini:"client"`
-	// the program; a path, or a name on PATH
+	// the program; a path, or a name on PATH (default built from source)
 	Program string `rotini:"program"`
 	// the arguments the client runs the program with, for a program serving itself
 	Args []string `rotini:"args"`
@@ -257,7 +260,7 @@ type RotiniMcpServeFlags struct {
 }
 
 type RotiniMcpServeArguments struct {
-	// the program to run for each call; a path, or a name on PATH
+	// the program to run for each call; a path, or a name on PATH (default built from source)
 	Program string `rotini:"program"`
 }
 
@@ -353,8 +356,10 @@ var Examples = []struct {
 	Summary string   // what it does; "" for none
 	Argv    []string // the words after the program's name
 }{
+	{Command: "rotini-mcp serve", Run: "rotini-mcp serve", Summary: "build the program tools/mcp.json names from source, and serve it", Argv: []string{"serve"}},
 	{Command: "rotini-mcp serve", Run: "rotini-mcp serve ./bin/notes", Summary: "serve tools/mcp.json, running ./bin/notes for each call", Argv: []string{"serve", "./bin/notes"}},
 	{Command: "rotini-mcp serve", Run: "rotini-mcp serve notes --tools build/tools/mcp.json --tool notes_list", Summary: "serve one tool of another tools file, running notes from PATH", Argv: []string{"serve", "notes", "--tools", "build/tools/mcp.json", "--tool", "notes_list"}},
+	{Command: "rotini-mcp add", Run: "rotini-mcp add claude-code", Summary: "Claude Code runs rotini-mcp serve here, building the program from source", Argv: []string{"add", "claude-code"}},
 	{Command: "rotini-mcp add", Run: "rotini-mcp add claude-code ./bin/notes", Summary: "Claude Code runs rotini-mcp serve ./bin/notes", Argv: []string{"add", "claude-code", "./bin/notes"}},
 	{Command: "rotini-mcp add", Run: "rotini-mcp add claude-code ./bin/notes mcp", Summary: "Claude Code runs ./bin/notes mcp, a program serving itself", Argv: []string{"add", "claude-code", "./bin/notes", "mcp"}},
 	{Command: "rotini-mcp add", Run: "rotini-mcp add claude-code ./bin/notes --permissions", Summary: "also allow the read-only tools and ask before the destructive ones", Argv: []string{"add", "claude-code", "./bin/notes", "--permissions"}},
@@ -374,9 +379,9 @@ func Usage(path ...string) (string, error) {
 	case "":
 		return "rotini-mcp [flags] <command>", nil
 	case "serve":
-		return "rotini-mcp serve [flags] <program>", nil
+		return "rotini-mcp serve [flags] [program]", nil
 	case "add":
-		return "rotini-mcp add [flags] <client> <program> [args...]", nil
+		return "rotini-mcp add [flags] <client> [program] [args...]", nil
 	case "remove":
 		return "rotini-mcp remove [flags] <client> <name>", nil
 	case "list":
@@ -423,7 +428,9 @@ func NewProgramWith(handlers ProgramHandlers) *rotini.Program {
 			return handlers.RotiniMcpVersion(), true
 		}
 		return nil, false
-	}).
+	},
+		rotini.Chdir(),
+	).
 		WithInputSettings(InputSettings).
 		WithHelp(Help)
 }
@@ -471,19 +478,19 @@ func (*handlers) RotiniMcpVersion() rotini.Handler {
 	return rotini.FromHandlerE(&rotiniMcpVersionHandler{})
 }
 
-var HelpRotiniMcp = "`rotini-mcp` serves the tool definitions a rotini program's tools feature writes (tools/mcp.json) as an MCP server on stdio, running the program for each call, and adds that server to MCP clients' configuration.\n\nUsage:\n  rotini-mcp [flags] <command>\n\nCommands:\n  serve      serve a program's tools over MCP on stdio\n  add        add a program's server to an MCP client\n  remove     remove a server from an MCP client\n  list       list the servers in MCP clients' configuration\n  help       print help\n  version    print version\n\nFlags:\n  -h, --help       print help\n      --version    print version\n\nUse \"rotini-mcp help <command>\" for more information about a command."
+var HelpRotiniMcp = "`rotini-mcp` serves the tool definitions a rotini program's tools feature writes (tools/mcp.json) as an MCP server on stdio, running the program for each call, and adds that server to MCP clients' configuration.\n\nUsage:\n  rotini-mcp [flags] <command>\n\nCommands:\n  serve      serve a program's tools over MCP on stdio\n  add        add a program's server to an MCP client\n  remove     remove a server from an MCP client\n  list       list the servers in MCP clients' configuration\n  help       print help\n  version    print version\n\nFlags:\n  -h, --help       print help\n      --version    print version\n  -C, --dir DIR    run as if started in this directory\n\nUse \"rotini-mcp help <command>\" for more information about a command."
 
-var HelpRotiniMcpServe = "Serve a rotini program's tools over MCP on stdio. The tools are read from the tools file the program's tools feature writes; each call runs the program with the command line its arguments make, in the server's environment, and returns what it prints.\n\nUsage:\n  rotini-mcp serve [flags] <program>\n\nArguments:\n  <program>    the program to run for each call; a path, or a name on PATH\n\nFlags:\n      --tools string      the tools file the program's tools feature writes (default tools/mcp.json)\n      --env string...     a variable to add to the program's environment (KEY=value) (repeatable)\n      --tool string...    serve only this tool (repeatable)\n\nLimits:\n      --timeout duration         stop a call that runs longer than this (0 for no limit) (default 0s)\n      --grace duration           how long a stopped call has between SIGTERM and being killed (0 kills it at once) (default 5s)\n      --output-limit bytesize    the most output a call may write on each of stdout and stderr (default 10Mi)\n      --concurrency int          run at most this many calls at once; more wait their turn (0 for no limit) (default 0)\n\nProtocol:\n      --revision string          the newest MCP revision to serve the tools for (default 2026-07-28) [2026-07-28|2025-11-25]\n      --success-stderr string    where a successful call's stderr goes: content (shown, and in _meta) or meta (only in _meta) (default content) [content|meta]\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n\nExamples:\n  # serve tools/mcp.json, running ./bin/notes for each call\n  rotini-mcp serve ./bin/notes\n  # serve one tool of another tools file, running notes from PATH\n  rotini-mcp serve notes --tools build/tools/mcp.json --tool notes_list"
+var HelpRotiniMcpServe = "Serve a rotini program's tools over MCP on stdio. The tools are read from the tools file the program's tools feature writes; each call runs the program with the command line its arguments make, in the server's environment, and returns what it prints.\n\nWithout a program, serve builds the program from source: the tools file names its main package, and serve builds it with go build when it starts, then runs that build for every call. Restart the server to pick up changes.\n\nUsage:\n  rotini-mcp serve [flags] [program]\n\nArguments:\n  [program]    the program to run for each call; a path, or a name on PATH (default built from source)\n\nFlags:\n      --tools string      the tools file the program's tools feature writes (default tools/mcp.json)\n      --env string...     a variable to add to the program's environment (KEY=value) (repeatable)\n      --tool string...    serve only this tool (repeatable)\n\nLimits:\n      --timeout duration         stop a call that runs longer than this (0 for no limit) (default 0s)\n      --grace duration           how long a stopped call has between SIGTERM and being killed (0 kills it at once) (default 5s)\n      --output-limit bytesize    the most output a call may write on each of stdout and stderr (default 10Mi)\n      --concurrency int          run at most this many calls at once; more wait their turn (0 for no limit) (default 0)\n\nProtocol:\n      --revision string          the newest MCP revision to serve the tools for (default 2026-07-28) [2026-07-28|2025-11-25]\n      --success-stderr string    where a successful call's stderr goes: content (shown, and in _meta) or meta (only in _meta) (default content) [content|meta]\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n  -C, --dir DIR    run as if started in this directory\n\nExamples:\n  # build the program tools/mcp.json names from source, and serve it\n  rotini-mcp serve\n  # serve tools/mcp.json, running ./bin/notes for each call\n  rotini-mcp serve ./bin/notes\n  # serve one tool of another tools file, running notes from PATH\n  rotini-mcp serve notes --tools build/tools/mcp.json --tool notes_list"
 
-var HelpRotiniMcpAdd = "Add an MCP server for a program to a client's configuration. With only the program, the client runs rotini-mcp serve for it; with arguments after the program, the client runs the program with them, for a program that serves its own tools (such as \"notes mcp\"). Paths are written as absolute paths. The server is named after the program unless --name says otherwise; a server already there with that name is updated, keeping its other settings.\n\nThe file is backed up to <file>.bak, and comments in it are not kept. --env values are written into the file, which for a project is often committed; keep secrets out of them. Run an installed rotini-mcp, or one the module declares as a tool (go tool), so the path the client runs stays valid.\n\nFor claude-code, --permissions also writes rules for the tools into the project's .claude/settings.json, from the tools file's annotations: read-only tools run without asking, destructive tools always ask, and the rest are left to the client.\n\nUsage:\n  rotini-mcp add [flags] <client> <program> [args...]\n\nArguments:\n  <client>     the client [claude-code|claude-desktop|cursor|vscode]\n  <program>    the program; a path, or a name on PATH\n  [args...]    the arguments the client runs the program with, for a program serving itself\n\nFlags:\n      --name string      the server's name in the client (default the program's name)\n      --tools string     the tools file the program's tools feature writes (default tools/mcp.json)\n      --env string...    a variable the client sets for the server (KEY=value) (repeatable)\n      --scope string     the user's file or the project's (default the client's first) [user|project]\n      --permissions      claude-code: also allow the read-only tools and ask before the destructive ones\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n\nExamples:\n  # Claude Code runs rotini-mcp serve ./bin/notes\n  rotini-mcp add claude-code ./bin/notes\n  # Claude Code runs ./bin/notes mcp, a program serving itself\n  rotini-mcp add claude-code ./bin/notes mcp\n  # also allow the read-only tools and ask before the destructive ones\n  rotini-mcp add claude-code ./bin/notes --permissions\n  # notes from PATH, in the project's Cursor file, named notes-dev\n  rotini-mcp add cursor notes --scope project --name notes-dev"
+var HelpRotiniMcpAdd = "Add an MCP server for a program to a client's configuration. With only the program, the client runs rotini-mcp serve for it; with arguments after the program, the client runs the program with them, for a program that serves its own tools (such as \"notes mcp\"). Without a program, the client runs rotini-mcp serve in this directory, which builds the program from source. Paths are written as absolute paths. The server is named after the program unless --name says otherwise; a server already there with that name is updated, keeping its other settings.\n\nThe file is backed up to <file>.bak, and comments in it are not kept. --env values are written into the file, which for a project is often committed; keep secrets out of them. Run an installed rotini-mcp, or one the module declares as a tool (go tool), so the path the client runs stays valid.\n\nFor claude-code, --permissions also writes rules for the tools into the project's .claude/settings.json, from the tools file's annotations: read-only tools run without asking, destructive tools always ask, and the rest are left to the client.\n\nUsage:\n  rotini-mcp add [flags] <client> [program] [args...]\n\nArguments:\n  <client>     the client [claude-code|claude-desktop|cursor|vscode]\n  [program]    the program; a path, or a name on PATH (default built from source)\n  [args...]    the arguments the client runs the program with, for a program serving itself\n\nFlags:\n      --name string      the server's name in the client (default the program's name)\n      --tools string     the tools file the program's tools feature writes (default tools/mcp.json)\n      --env string...    a variable the client sets for the server (KEY=value) (repeatable)\n      --scope string     the user's file or the project's (default the client's first) [user|project]\n      --permissions      claude-code: also allow the read-only tools and ask before the destructive ones\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n  -C, --dir DIR    run as if started in this directory\n\nExamples:\n  # Claude Code runs rotini-mcp serve here, building the program from source\n  rotini-mcp add claude-code\n  # Claude Code runs rotini-mcp serve ./bin/notes\n  rotini-mcp add claude-code ./bin/notes\n  # Claude Code runs ./bin/notes mcp, a program serving itself\n  rotini-mcp add claude-code ./bin/notes mcp\n  # also allow the read-only tools and ask before the destructive ones\n  rotini-mcp add claude-code ./bin/notes --permissions\n  # notes from PATH, in the project's Cursor file, named notes-dev\n  rotini-mcp add cursor notes --scope project --name notes-dev"
 
-var HelpRotiniMcpRemove = "Remove a server from a client's configuration, by its name or by the program it was added for. For claude-code, the server's tool rules in the project's .claude/settings.json go too. The file is backed up to <file>.bak, and comments in it are not kept.\n\nUsage:\n  rotini-mcp remove [flags] <client> <name>\n\nArguments:\n  <client>    the client [claude-code|claude-desktop|cursor|vscode]\n  <name>      the server's name, or the program it was added for\n\nFlags:\n      --scope string    the user's file or the project's (default the client's first) [user|project]\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n\nExamples:\n  rotini-mcp remove claude-code notes\n  rotini-mcp remove claude-code ./bin/notes"
+var HelpRotiniMcpRemove = "Remove a server from a client's configuration, by its name or by the program it was added for. For claude-code, the server's tool rules in the project's .claude/settings.json go too. The file is backed up to <file>.bak, and comments in it are not kept.\n\nUsage:\n  rotini-mcp remove [flags] <client> <name>\n\nArguments:\n  <client>    the client [claude-code|claude-desktop|cursor|vscode]\n  <name>      the server's name, or the program it was added for\n\nFlags:\n      --scope string    the user's file or the project's (default the client's first) [user|project]\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n  -C, --dir DIR    run as if started in this directory\n\nExamples:\n  rotini-mcp remove claude-code notes\n  rotini-mcp remove claude-code ./bin/notes"
 
-var HelpRotiniMcpList = "List the servers in every client's configuration, or in one client's: each line is the client, the file's scope, the server's name and the command the client runs.\n\nUsage:\n  rotini-mcp list [flags] [client]\n\nArguments:\n  [client]    the client (default every client) [claude-code|claude-desktop|cursor|vscode]\n\nFlags:\n      --scope string    only the user's files or only the project's [user|project]\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n\nExamples:\n  rotini-mcp list\n  rotini-mcp list claude-code"
+var HelpRotiniMcpList = "List the servers in every client's configuration, or in one client's: each line is the client, the file's scope, the server's name and the command the client runs.\n\nUsage:\n  rotini-mcp list [flags] [client]\n\nArguments:\n  [client]    the client (default every client) [claude-code|claude-desktop|cursor|vscode]\n\nFlags:\n      --scope string    only the user's files or only the project's [user|project]\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n  -C, --dir DIR    run as if started in this directory\n\nExamples:\n  rotini-mcp list\n  rotini-mcp list claude-code"
 
-var HelpRotiniMcpHelp = "Print help for a command.\n\nUsage:\n  rotini-mcp help [command...]\n\nArguments:\n  [command...]    the command path to print help for\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version"
+var HelpRotiniMcpHelp = "Print help for a command.\n\nUsage:\n  rotini-mcp help [command...]\n\nArguments:\n  [command...]    the command path to print help for\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n  -C, --dir DIR    run as if started in this directory"
 
-var HelpRotiniMcpVersion = "Print the rotini-mcp version.\n\nUsage:\n  rotini-mcp version\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version"
+var HelpRotiniMcpVersion = "Print the rotini-mcp version.\n\nUsage:\n  rotini-mcp version\n\nGlobal Flags:\n  -h, --help       print help\n      --version    print version\n  -C, --dir DIR    run as if started in this directory"
 
 // Help returns the generated help text for the command identified by path
 // (command names or aliases; no arguments for the root command). It returns a
