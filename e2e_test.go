@@ -65,7 +65,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	forms := map[string]*exec.Cmd{
-		"rotini-mcp serve": exec.Command(serverBin, "serve", "--tools", toolsFile, "--bin", taskrBin),
+		"rotini-mcp serve": exec.Command(serverBin, "serve", taskrBin, "--tools", toolsFile),
 		"taskr mcp":        exec.Command(taskrBin, "mcp"),
 	}
 	for name, cmd := range forms {

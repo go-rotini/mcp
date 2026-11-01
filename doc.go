@@ -10,7 +10,7 @@
 // There are two ways to serve:
 //
 //   - The rotini-mcp command serves a tools file for a built program:
-//     `rotini-mcp serve --tools tools/mcp.json --bin ./taskr`.
+//     `rotini-mcp serve ./taskr` (its tools file is tools/mcp.json unless --tools says otherwise).
 //   - A program serves its own tools from a command it declares (such as `taskr mcp`, kept from
 //     agents with `agent: false`), whose handler calls [Serve] with ToolsMCP. Each call
 //     re-runs the program's own executable.

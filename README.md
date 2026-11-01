@@ -26,8 +26,8 @@ command line and run as a child process; what the program prints becomes the res
   on cancel or timeout so the program's signal handling runs, capped output
 - MCP revision 2026-07-28, with 2025-11-25 for older clients
 - Selectors for tools and parameters, and middleware around each call
-- `rotini-mcp config` writes the server into Claude Desktop, Claude Code, Cursor and VS Code
-  configuration
+- `rotini-mcp add`, `remove` and `list` manage the server in the configuration of Claude Code,
+  Claude Desktop, Cursor and VS Code
 - Built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)
 
 ## Installation
@@ -60,52 +60,79 @@ selector drops an example that sets a parameter it leaves out.
 ## Serving with rotini-mcp
 
 ```bash
-rotini-mcp serve --tools tools/mcp.json --bin ./taskr
+rotini-mcp serve ./bin/taskr                       # tools/mcp.json, running ./bin/taskr for each call
+rotini-mcp add claude-code ./bin/taskr             # add that server to Claude Code
+rotini-mcp add claude-code ./bin/taskr mcp         # or: Claude Code runs "taskr mcp", a program serving itself
+rotini-mcp list                                    # the servers in every client
+rotini-mcp remove claude-code taskr
 ```
+
+With a Rotini companion installed the same way (both with `go install`, or both as tools of the
+module), the same commands run as `rotini mcp serve …`, `rotini mcp add …` and so on.
+
+### serve
+
+`rotini-mcp serve <program>` serves the program's tools on stdio. `<program>` is a path, or a
+name on `PATH`.
 
 | Flag | Default | |
 |---|---|---|
-| `--tools` | | the tools file (required) |
-| `--bin` | | the program to run for each call; a path, or a name on `PATH` (required) |
+| `--tools` | `tools/mcp.json` | the tools file the program's tools feature writes |
 | `--env KEY=value` | | add a variable to the program's environment (repeatable) |
 | `--tool NAME` | every tool | serve only these tools (repeatable) |
 | `--timeout` | `0s` (none) | stop a call that runs longer |
 | `--grace` | `5s` | time between SIGTERM and kill for a stopped call (`0` kills it at once) |
 | `--output-limit` | `10Mi` | the most a call may write on each of stdout and stderr |
 | `--concurrency` | `0` (none) | run at most this many calls at once; more wait their turn |
-| `--revision` | `2026-07-28` | the MCP revision to serve for (`2025-11-25` for older clients) |
+| `--revision` | `2026-07-28` | the newest MCP revision to serve for (`2025-11-25` for older clients) |
 | `--success-stderr` | `content` | where a successful call's stderr goes: `content` shows it, `meta` keeps it in `_meta` only |
 
-Add it to a client:
+### add, remove, list
 
-```bash
-rotini-mcp config enable claude-desktop taskr --tools tools/mcp.json --bin ./taskr
-rotini-mcp config enable claude-code taskr --command taskr --arg mcp   # a program serving itself
-rotini-mcp config list cursor --scope project
-rotini-mcp config disable vscode taskr
-```
+`rotini-mcp add <client> <program> [args...]` adds a server to a client's configuration:
 
-Clients: `claude-desktop`, `claude-code` (the project's `.mcp.json`), `cursor` and `vscode`
-(`--scope user` or `project`). A file is backed up to `<file>.bak` before it is rewritten,
-replacing an earlier backup; the rewrite keeps every other setting in its order, but comments are
-not kept. Enabling a server that is already there updates its command, arguments and env and keeps
-its other settings (such as `disabled` or `autoApprove`). A file that is a symbolic link stays one:
-the file it links to is rewritten.
-`--env` values are written into the file, and a project's file is often committed, so keep
-secrets out of them. The entry names the `rotini-mcp` executable that wrote it, so run an
-installed one, not one from `go run`.
+- **With only the program,** the client runs `rotini-mcp serve <program> --tools <file>`.
+- **With arguments after the program,** the client runs the program with them, for a program that
+  serves its own tools (`rotini-mcp add claude-code ./bin/taskr mcp`). Put `--` before arguments
+  that start with `-`.
+- **The server is named after the program** (`taskr`); `--name` names it otherwise.
+- **Paths are written as absolute paths,** since a client starts servers from a directory of its
+  own; a bare program name is left for the client to find on its `PATH`.
+- **The entry names the `rotini-mcp` that wrote it.** Run an installed one, or one the module
+  declares as a tool: run from Go's build cache (`go tool`), it writes
+  `go -C <module> tool rotini-mcp serve …`, so the module's pinned version runs and a cleaned
+  cache doesn't break the entry. `go run` is refused for the same reason.
 
-For Claude Code, `--permissions` also writes rules for the server's tools into the project's
-`.claude/settings.json`, from the tools' annotations: read-only tools run without asking
-(`permissions.allow`), destructive tools always ask (`permissions.ask`), and the rest are left
-to the client. The rules are Claude Code's tool names, `mcp__<server>__<tool>`; enabling again
-replaces the ones for that server, every other rule is kept, and `config disable` removes them.
-With `--command`, give `--tools` too, for the annotations:
+Clients: `claude-code` (the project's `.mcp.json`), `claude-desktop`, `cursor` and `vscode`
+(`--scope user` or `project`).
 
-```bash
-rotini-mcp config enable claude-code taskr --tools tools/mcp.json --bin ./taskr --permissions
-rotini-mcp config enable claude-code taskr --command taskr --arg mcp --tools tools/mcp.json --permissions
-```
+- **Backup:** a file is backed up to `<file>.bak` before it is rewritten, replacing an earlier
+  backup.
+- **What's kept:** the rewrite keeps every other setting in its order, but not comments. Adding a
+  server that's already there updates its command, arguments and env, and keeps its other
+  settings (such as `disabled` or `autoApprove`).
+- **Symbolic links:** a file that is a symbolic link stays one; the file it links to is rewritten.
+- **Secrets:** `--env` values are written into the file, and a project's file is often committed,
+  so keep secrets out of them.
+
+`rotini-mcp remove <client> <name>` removes a server, by its name or by the program it was added
+for. `rotini-mcp list [client]` lists the servers in every client's files, or one client's: the
+client, the file's scope, the name and the command.
+
+### Permissions
+
+For Claude Code, `add --permissions` also writes rules for the server's tools into the project's
+`.claude/settings.json`, from the tools' annotations:
+
+| Annotation | Rule |
+|---|---|
+| read-only | runs without asking (`permissions.allow`) |
+| destructive | always asks (`permissions.ask`) |
+| neither | none; the client's default applies |
+
+The rules are Claude Code's tool names, `mcp__<server>__<tool>`. Adding again replaces the
+server's rules, every other rule is kept, and `remove` takes them away. A program serving
+itself reads the annotations from `--tools` (default `tools/mcp.json`).
 
 ## Serving from the program itself
 

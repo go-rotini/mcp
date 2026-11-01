@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,13 +31,13 @@ func (*rotiniMcpServeHandler) Run(ctx context.Context, rtx *rotini.Context) erro
 	if err != nil {
 		return err
 	}
-	f := inputs.RotiniMcpServe.Flags
+	f, a := inputs.RotiniMcpServe.Flags, inputs.RotiniMcpServe.Arguments
 
-	doc, err := os.ReadFile(underDir(rtx.Dir(), f.Tools))
+	doc, err := readTools(rtx.Dir(), f.Tools)
 	if err != nil {
 		return err
 	}
-	bin, err := program(rtx.Dir(), f.Bin)
+	bin, err := program(rtx.Dir(), a.Program)
 	if err != nil {
 		return err
 	}
@@ -74,6 +75,15 @@ func successStderr(v string) mcp.SuccessStderr {
 	return mcp.SuccessStderrContent
 }
 
+// readTools reads the tools file, explaining where one comes from when it's missing.
+func readTools(dir, path string) ([]byte, error) {
+	doc, err := os.ReadFile(underDir(dir, path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("no tools file at %s: turn on the tools feature in the program's conf and run go generate, or give its path with --tools", path)
+	}
+	return doc, err
+}
+
 // underDir resolves a path typed relative to the run's directory.
 func underDir(dir, path string) string {
 	if filepath.IsAbs(path) || dir == "" {
@@ -89,16 +99,16 @@ func program(dir, bin string) (string, error) {
 	if strings.ContainsRune(bin, '/') || strings.ContainsRune(bin, filepath.Separator) {
 		abs, err := filepath.Abs(underDir(dir, bin))
 		if err != nil {
-			return "", fmt.Errorf("resolve --bin: %w", err)
+			return "", fmt.Errorf("resolve %s: %w", bin, err)
 		}
 		if err := isFile(abs); err != nil {
-			return "", fmt.Errorf("--bin %s: %w", bin, err)
+			return "", fmt.Errorf("%s: %w", bin, err)
 		}
 		path = abs
 	} else {
 		found, err := exec.LookPath(bin)
 		if err != nil {
-			return "", fmt.Errorf("--bin %s: %w", bin, err)
+			return "", fmt.Errorf("%s: %w", bin, err)
 		}
 		path = found
 	}
@@ -116,7 +126,7 @@ func refuseBatchFile(goos, path string) error {
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".bat", ".cmd":
-		return fmt.Errorf("--bin %s: a batch file runs through cmd.exe, which parses its arguments again, so a call's values could run as commands; give the program itself", path)
+		return fmt.Errorf("%s: a batch file runs through cmd.exe, which parses its arguments again, so a call's values could run as commands; give the program itself", path)
 	}
 	return nil
 }

@@ -8,10 +8,10 @@ You should receive a response within 72 hours. If accepted, a fix will be develo
 
 ## What a Server Runs
 
-A server runs one program: the `--bin` given to `rotini-mcp serve`, or the running program
+A server runs one program: the one given to `rotini-mcp serve`, or the running program
 itself in the library form. Each call runs it with a command line built from the call's
 arguments; nothing goes through a shell. On Windows, `rotini-mcp` refuses a batch file
-(`.bat`, `.cmd`) as `--bin`: Windows runs it through cmd.exe, which parses its arguments again,
+(`.bat`, `.cmd`) as the program: Windows runs it through cmd.exe, which parses its arguments again,
 so a call's values could run as commands.
 
 - **Arguments are checked before anything runs.** A call must match the tool's input schema
