@@ -29,7 +29,9 @@ func runCLI(t *testing.T, dir string, args ...string) (code int, stdout, stderr 
 }
 
 // isolate points the user's files (home and config directory) at a temporary directory, so a
-// test never reads or writes the real ones.
+// test never reads or writes the real ones. Go's telemetry is turned off there: the go command
+// add runs would otherwise write telemetry files into it, from a process that can outlive the
+// test and race the directory's removal.
 func isolate(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
@@ -37,6 +39,17 @@ func isolate(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("APPDATA", filepath.Join(home, "AppData"))
+	config, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	telemetry := filepath.Join(config, "go", "telemetry")
+	if err := os.MkdirAll(telemetry, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(telemetry, "mode"), []byte("off"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // A program serving itself: the client runs the program with the arguments after it.
