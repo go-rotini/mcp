@@ -11,39 +11,36 @@ import (
 
 	"github.com/go-rotini/rotini"
 
+	"github.com/go-rotini/mcp"
 	"github.com/go-rotini/mcp/clients"
 )
 
-var _ rotini.Handler = (*rotiniMcpConfigEnableHandler)(nil)
+var _ rotini.HandlerE = (*rotiniMcpConfigEnableHandler)(nil)
 
 type rotiniMcpConfigEnableHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*rotiniMcpConfigEnableHandler) Run(ctx context.Context, rtx *rotini.Context) {
+func (*rotiniMcpConfigEnableHandler) Run(ctx context.Context, rtx *rotini.Context) error {
 	inputs, err := rtx.Inputs[RotiniMcpConfigEnableInputs]()
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	f, a := inputs.RotiniMcpConfigEnable.Flags, inputs.RotiniMcpConfigEnable.Arguments
 
-	server, err := serverEntry(rtx.Dir(), f)
+	server, err := serverEntry(rtx.Dir(), f, a)
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	path, err := clients.Enable(clients.Client(a.Client), clients.Scope(f.Scope), clients.Dirs{Project: rtx.Dir()}, a.Name, server)
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	if _, err := fmt.Fprintf(rtx.Stdout, "added %s to %s\n", a.Name, path); err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	scope := clients.Scope(f.Scope)
 	if scope == "" {
@@ -52,11 +49,48 @@ func (*rotiniMcpConfigEnableHandler) Run(ctx context.Context, rtx *rotini.Contex
 	if scope == clients.Project && machinePaths(server) {
 		_, _ = fmt.Fprintf(rtx.Stderr, "note: %s names files by paths on this machine; anyone who shares the file needs an entry of their own\n", path)
 	}
+	if !f.Permissions {
+		return nil
+	}
+	perms, err := toolPermissions(underDir(rtx.Dir(), f.Tools))
+	if err != nil {
+		return err
+	}
+	path, err = clients.SetPermissions(clients.Client(a.Client), clients.Dirs{Project: rtx.Dir()}, a.Name, perms)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(rtx.Stdout, "set the tool rules for %s in %s: %d allowed, %d asked\n", a.Name, path, len(perms.Allow), len(perms.Ask))
+	return err
+}
+
+// toolPermissions sorts a tools file's tools by their annotations: read-only ones are allowed,
+// destructive ones asked; the rest get no rule.
+func toolPermissions(file string) (clients.Permissions, error) {
+	doc, err := os.ReadFile(file)
+	if err != nil {
+		return clients.Permissions{}, err
+	}
+	tools, err := mcp.ParseTools(doc)
+	if err != nil {
+		return clients.Permissions{}, err
+	}
+	var p clients.Permissions
+	for _, t := range tools {
+		switch a := t.Annotations; {
+		case a == nil:
+		case a.ReadOnlyHint:
+			p.Allow = append(p.Allow, t.Name)
+		case a.DestructiveHint != nil && *a.DestructiveHint:
+			p.Ask = append(p.Ask, t.Name)
+		}
+	}
+	return p, nil
 }
 
 // serverEntry is how the client starts the server: rotini-mcp serve for --tools and --bin,
-// or --command with its --arg words.
-func serverEntry(dir string, f RotiniMcpConfigEnableFlags) (clients.Server, error) {
+// or --command with its --arg words (and --tools only for --permissions).
+func serverEntry(dir string, f RotiniMcpConfigEnableFlags, a RotiniMcpConfigEnableArguments) (clients.Server, error) {
 	if err := checkEnv(f.Env); err != nil {
 		return clients.Server{}, err
 	}
@@ -66,7 +100,11 @@ func serverEntry(dir string, f RotiniMcpConfigEnableFlags) (clients.Server, erro
 		env[k] = v
 	}
 	switch {
-	case f.Command != "" && (f.Tools != "" || f.Bin != ""):
+	case f.Permissions && clients.Client(a.Client) != clients.ClaudeCode:
+		return clients.Server{}, fmt.Errorf("--permissions writes Claude Code's rules; it doesn't go with %s", a.Client)
+	case f.Permissions && f.Tools == "":
+		return clients.Server{}, errors.New("--permissions reads the tools' annotations from --tools; give it")
+	case f.Command != "" && (f.Bin != "" || (f.Tools != "" && !f.Permissions)):
 		return clients.Server{}, errors.New("give either --command or --tools and --bin, not both")
 	case f.Command != "":
 		command, err := commandPath(dir, f.Command)

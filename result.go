@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,7 @@ const (
 	metaStderr   = "dev.rotini/stderr"
 	metaTrailing = "dev.rotini/trailing_stdout"
 	metaError    = "dev.rotini/error"
+	metaRecords  = "dev.rotini/records"
 )
 
 // errorSchemaVersion is the StructuredReporter line version this module reads.
@@ -27,11 +29,16 @@ const errorSchemaVersion = 1
 // A zero exit is a success. With an output schema, stdout is the structured content (one JSON
 // value, or one per line for a stream), checked against the schema, with its JSON as the text;
 // text after the value (the default reporter's messages) goes in _meta. Without one, stdout is
-// the text. A non-zero exit is an error: the text is stderr, and a StructuredReporter error line
+// the text. On success, stderr (with that trailing text) is shown as described at
+// [SuccessStderrContent], unless mode is [SuccessStderrMeta]. A non-zero exit is an error: the text is stderr, and a StructuredReporter error line
 // on stderr is the structured content, or with an output schema (which clients check structured
-// content against, even on an error) goes in _meta.
-func (t *tool) result(r *run) *sdk.CallToolResult {
+// content against, even on an error) goes in _meta. Every StructuredReporter line on stderr goes
+// in _meta too.
+func (t *tool) result(r *run, mode SuccessStderr) *sdk.CallToolResult {
 	meta := sdk.Meta{metaExitCode: r.code}
+	if records := reportLines(r.stderr); len(records) > 0 {
+		meta[metaRecords] = records
+	}
 	switch {
 	case r.failure != "":
 		return errorResult(meta, r.failure)
@@ -45,11 +52,18 @@ func (t *tool) result(r *run) *sdk.CallToolResult {
 	case r.code != 0:
 		return t.failure(meta, r)
 	}
-	if stderr := strings.TrimSpace(string(r.stderr)); stderr != "" {
+	stderr := strings.TrimSpace(string(r.stderr))
+	if stderr != "" {
 		meta[metaStderr] = stderr
 	}
+	if mode != SuccessStderrContent {
+		stderr = ""
+	}
 	if t.out == nil {
-		return &sdk.CallToolResult{Meta: meta, Content: []sdk.Content{&sdk.TextContent{Text: string(r.stdout)}}}
+		if len(r.stdout) == 0 && stderr != "" {
+			return &sdk.CallToolResult{Meta: meta, Content: []sdk.Content{&sdk.TextContent{Text: stderr}}}
+		}
+		return &sdk.CallToolResult{Meta: meta, Content: withMessages([]sdk.Content{&sdk.TextContent{Text: string(r.stdout)}}, stderr)}
 	}
 	v, trailing, err := decodeOutput(r.stdout, t.Invoke.Stream)
 	if err != nil {
@@ -68,7 +82,19 @@ func (t *tool) result(r *run) *sdk.CallToolResult {
 	if msg := validationMessage(t.out, []byte(text)); msg != "" {
 		return errorResult(meta, "the command's output doesn't match the tool's output schema: "+msg)
 	}
-	return &sdk.CallToolResult{Meta: meta, StructuredContent: v, Content: []sdk.Content{&sdk.TextContent{Text: text}}}
+	if mode == SuccessStderrContent {
+		stderr = strings.TrimSpace(trailing + "\n" + stderr)
+	}
+	return &sdk.CallToolResult{Meta: meta, StructuredContent: v, Content: withMessages([]sdk.Content{&sdk.TextContent{Text: text}}, stderr)}
+}
+
+// withMessages adds a run's messages to its content as a text block of their own, when it has
+// any.
+func withMessages(content []sdk.Content, messages string) []sdk.Content {
+	if messages == "" {
+		return content
+	}
+	return append(content, &sdk.TextContent{Text: messages})
 }
 
 // failure is the result of a non-zero exit.
@@ -138,17 +164,7 @@ func decodeOutput(stdout []byte, stream bool) (v any, trailing string, err error
 // errorLine finds a StructuredReporter error line on stderr: a JSON object with an "error"
 // member and either a schema_version this module reads or no schema_version.
 func errorLine(stderr []byte) map[string]any {
-	for line := range strings.Lines(string(stderr)) {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var m map[string]any
-		dec := json.NewDecoder(strings.NewReader(line))
-		dec.UseNumber()
-		if dec.Decode(&m) != nil {
-			continue
-		}
+	for m := range jsonLines(stderr) {
 		if m["error"] == nil {
 			continue
 		}
@@ -158,6 +174,45 @@ func errorLine(stderr []byte) map[string]any {
 		return m
 	}
 	return nil
+}
+
+// reportLines lists the StructuredReporter lines on stderr, in order: each a JSON object
+// holding a schema_version this module reads and one record (an error, warning, info or
+// success, or a record of a channel the program's spec declares, under its channel's name).
+func reportLines(stderr []byte) []any {
+	var lines []any
+	for m := range jsonLines(stderr) {
+		if len(m) != 2 || m["schema_version"] != json.Number(strconv.Itoa(errorSchemaVersion)) {
+			continue
+		}
+		for _, v := range m {
+			if _, ok := v.(map[string]any); ok {
+				lines = append(lines, m)
+			}
+		}
+	}
+	return lines
+}
+
+// jsonLines yields each line of out that is a JSON object, numbers as json.Number.
+func jsonLines(out []byte) iter.Seq[map[string]any] {
+	return func(yield func(map[string]any) bool) {
+		for line := range strings.Lines(string(out)) {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "{") {
+				continue
+			}
+			var m map[string]any
+			dec := json.NewDecoder(strings.NewReader(line))
+			dec.UseNumber()
+			if dec.Decode(&m) != nil {
+				continue
+			}
+			if !yield(m) {
+				return
+			}
+		}
+	}
 }
 
 // validationMessage checks a JSON document against a schema: "" when it matches, else the

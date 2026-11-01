@@ -7,20 +7,19 @@ import (
 	"github.com/go-rotini/rotini"
 )
 
-var _ rotini.Handler = (*taskrAddHandler)(nil)
+var _ rotini.HandlerE = (*taskrAddHandler)(nil)
 
 type taskrAddHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*taskrAddHandler) Run(ctx context.Context, rtx *rotini.Context) {
+func (*taskrAddHandler) Run(ctx context.Context, rtx *rotini.Context) error {
 	in, err := rtx.Inputs[TaskrAddInputs]()
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	f := in.TaskrAdd.Flags
 	out := map[string]any{
@@ -36,7 +35,5 @@ func (*taskrAddHandler) Run(ctx context.Context, rtx *rotini.Context) {
 	for k, v := range f.Label {
 		out["label"].(map[string]string)[k] = v
 	}
-	if err := json.NewEncoder(rtx.Stdout).Encode(out); err != nil {
-		rtx.HaltWith(err)
-	}
+	return json.NewEncoder(rtx.Stdout).Encode(out)
 }

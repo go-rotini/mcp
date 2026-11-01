@@ -97,6 +97,17 @@ func checkEndToEnd(t *testing.T, cs *sdk.ClientSession) {
 		t.Fatalf("tools = %v; the mcp command must not be one", names)
 	}
 
+	// The spec's examples and metadata reach the client: metadata may use a key that the
+	// invocation facts use too.
+	add := list.Tools[0]
+	in, _ := json.Marshal(add.InputSchema)
+	if want := `"examples":[{"priority":"high","tag":["home"],"title":"buy milk"}]`; !strings.Contains(string(in), want) {
+		t.Errorf("taskr_add input schema %s, want %s", in, want)
+	}
+	if md, _ := add.Meta["dev.rotini/metadata"].(map[string]any); md["owner"] != "core" || md["path"] != "tasks" {
+		t.Errorf("taskr_add _meta = %v", add.Meta)
+	}
+
 	res := call(t, cs, "taskr_add", map[string]any{
 		"title":    "-starts with a dash",
 		"tag":      []any{"home", "a b"},
@@ -185,6 +196,12 @@ func checkEndToEnd(t *testing.T, cs *sdk.ClientSession) {
 	e, _ := line["error"].(map[string]any)
 	if fmt.Sprint(line["schema_version"]) != "1" || !strings.Contains(fmt.Sprint(e["message"]), "the list is locked") {
 		t.Errorf("structured error = %v", line)
+	}
+	// Every StructuredReporter line, a declared channel's record too, is in _meta.
+	records, _ := json.Marshal(res.Meta["dev.rotini/records"])
+	if !strings.Contains(string(records), `{"schema_version":1,"skipped":{"title":"water plants"}}`) ||
+		!strings.Contains(string(records), `"error":{`) {
+		t.Errorf("records = %s", records)
 	}
 }
 

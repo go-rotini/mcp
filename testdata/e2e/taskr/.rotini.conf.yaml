@@ -1,10 +1,11 @@
-version: 1.4.0
+version: 1.11.0
 generate:
   packages:
     - type: main
       file: cmd/taskr/main.go
     - type: cmd
       file: internal/cmd/taskr/zz_rotini.go
+      hook_returns: error
   features:
     - type: tools
       enabled: true

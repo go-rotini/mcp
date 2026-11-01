@@ -7,40 +7,32 @@ import (
 	"github.com/go-rotini/rotini"
 )
 
-var _ rotini.Handler = (*rotiniMcpHandler)(nil)
+var _ rotini.HandlerE = (*rotiniMcpHandler)(nil)
 
 type rotiniMcpHandler struct {
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*rotiniMcpHandler) CascadingPreRun(ctx context.Context, rtx *rotini.Context) {
+func (*rotiniMcpHandler) CascadingPreRun(ctx context.Context, rtx *rotini.Context) error {
 	inputs, err := rtx.Inputs[RotiniMcpInputs]()
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 
 	if inputs.RotiniMcp.Flags.Help {
-		var path []string
-		for _, c := range rtx.CommandChain()[1:] {
-			path = append(path, c.Name)
-		}
-
-		page, err := Help(path...)
+		page, err := rtx.InvokedHelp()
 		if err != nil {
-			rtx.HaltWith(err)
-			return
+			return err
 		}
 
 		if _, err := fmt.Fprintln(rtx.Stdout, page); err != nil {
-			rtx.HaltWith(err)
-			return
+			return err
 		}
 
 		rtx.HaltWithCode(0)
-		return
+		return nil
 	}
 
 	if inputs.RotiniMcp.Flags.Version {
@@ -50,16 +42,18 @@ func (*rotiniMcpHandler) CascadingPreRun(ctx context.Context, rtx *rotini.Contex
 		}
 
 		if _, err := fmt.Fprintln(rtx.Stdout, rtx.CommandChain()[0].Name, version); err != nil {
-			rtx.HaltWith(err)
-			return
+			return err
 		}
 
 		rtx.HaltWithCode(0)
-		return
+		return nil
 	}
+
+	return nil
 }
 
-func (*rotiniMcpHandler) Run(ctx context.Context, rtx *rotini.Context) {
+func (*rotiniMcpHandler) Run(ctx context.Context, rtx *rotini.Context) error {
 	fmt.Fprintln(rtx.Stderr, rtx.Help())
 	rtx.HaltWithCode(1)
+	return nil
 }

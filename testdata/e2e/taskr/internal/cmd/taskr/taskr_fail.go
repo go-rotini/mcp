@@ -7,15 +7,16 @@ import (
 	"github.com/go-rotini/rotini"
 )
 
-var _ rotini.Handler = (*taskrFailHandler)(nil)
+var _ rotini.HandlerE = (*taskrFailHandler)(nil)
 
 type taskrFailHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*taskrFailHandler) Run(ctx context.Context, rtx *rotini.Context) {
-	rtx.HaltWith(errors.New("the list is locked"))
+func (*taskrFailHandler) Run(ctx context.Context, rtx *rotini.Context) error {
+	rtx.Record(SkippedChannel, SkippedRecord{Title: "water plants"})
+	return errors.New("the list is locked")
 }

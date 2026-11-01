@@ -121,11 +121,11 @@ func parseTool(raw json.RawMessage) (Tool, error) {
 		return Tool{}, fmt.Errorf("not a JSON object: %w", err)
 	}
 	var head struct {
-		Name        string               `json:"name"`
-		Title       string               `json:"title"`
-		Description string               `json:"description"`
-		Annotations *sdk.ToolAnnotations `json:"annotations"`
-		Meta        map[string]Invoke    `json:"_meta"`
+		Name        string                     `json:"name"`
+		Title       string                     `json:"title"`
+		Description string                     `json:"description"`
+		Annotations *sdk.ToolAnnotations       `json:"annotations"`
+		Meta        map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil {
 		return Tool{}, fmt.Errorf("can't read it: %w", err)
@@ -133,9 +133,13 @@ func parseTool(raw json.RawMessage) (Tool, error) {
 	if head.Name == "" {
 		return Tool{}, errors.New("it has no name")
 	}
-	inv, ok := head.Meta[MetaKey]
+	facts, ok := head.Meta[MetaKey]
 	if !ok {
 		return Tool{}, fmt.Errorf("%q has no _meta[%q]; write the tools document with Rotini's tools feature", head.Name, MetaKey)
+	}
+	var inv Invoke
+	if err := json.Unmarshal(facts, &inv); err != nil {
+		return Tool{}, fmt.Errorf("%q: its _meta[%q] can't be read: %w", head.Name, MetaKey, err)
 	}
 	if err := inv.check(); err != nil {
 		return Tool{}, fmt.Errorf("%q: %w", head.Name, err)

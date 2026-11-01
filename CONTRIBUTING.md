@@ -66,6 +66,9 @@ go -C ../rotini build -o "$PWD/rotini.local" ./cmd/rotini
 rm rotini.local
 ```
 
+`make check-generated` uses the released companion of the version `go.mod` requires, or, when
+`go.mod` itself replaces rotini with a local directory, a companion built from it.
+
 ## Pull Requests
 
 - Keep PRs focused on a single change.

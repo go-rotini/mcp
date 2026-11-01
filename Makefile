@@ -37,10 +37,18 @@ lint:
 	@$(MAKE) --no-print-directory check-generated
 
 # check-generated fails when internal/cmd/rotinimcp/zz_rotini.go isn't what the rotini version
-# go.mod requires generates from cmd/rotini-mcp's spec and conf.
+# go.mod requires generates from cmd/rotini-mcp's spec and conf. When go.mod replaces rotini with
+# a local directory, the companion is built from that directory instead.
 check-generated:
-	@v=$$(GOWORK=off go list -m -f '{{.Version}}' github.com/go-rotini/rotini) && \
-	GOWORK=off go -C cmd/rotini-mcp run github.com/go-rotini/rotini/cmd/rotini@$$v generate --dry-run
+	@dir=$$(GOWORK=off go list -m -f '{{with .Replace}}{{.Dir}}{{end}}' github.com/go-rotini/rotini) && \
+	if [ -n "$$dir" ]; then \
+		bin=$$(mktemp -d); trap 'rm -rf "$$bin"' EXIT; \
+		GOWORK=off go -C "$$dir" build -o "$$bin/rotini" ./cmd/rotini && \
+		(cd cmd/rotini-mcp && "$$bin/rotini" generate --dry-run); \
+	else \
+		v=$$(GOWORK=off go list -m -f '{{.Version}}' github.com/go-rotini/rotini) && \
+		GOWORK=off go -C cmd/rotini-mcp run github.com/go-rotini/rotini/cmd/rotini@$$v generate --dry-run; \
+	fi
 
 vuln:
 	@$(call TOOL,govulncheck) -test ./...

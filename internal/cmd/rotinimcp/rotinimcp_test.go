@@ -83,6 +83,52 @@ func TestConfig_serveServer(t *testing.T) {
 	}
 }
 
+// --permissions turns the tools' annotations into Claude Code rules, and disable takes them away.
+func TestConfig_permissions(t *testing.T) {
+	dir := t.TempDir()
+	tools := `{"tools":[
+  {"name":"notes_list","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true},"_meta":{"dev.rotini/invoke":{"path":["list"]}}},
+  {"name":"notes_add","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":false,"destructiveHint":false},"_meta":{"dev.rotini/invoke":{"path":["add"]}}},
+  {"name":"notes_clear","inputSchema":{"type":"object"},"annotations":{"destructiveHint":true},"_meta":{"dev.rotini/invoke":{"path":["clear"]}}},
+  {"name":"notes_misc","inputSchema":{"type":"object"},"_meta":{"dev.rotini/invoke":{"path":["misc"]}}}
+]}`
+	if err := os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(tools), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI(t, dir, "config", "enable", "claude-code", "notes", "--tools", "mcp.json", "--bin", "./notes", "--permissions")
+	if code != 0 || !strings.Contains(out, "1 allowed, 1 asked") {
+		t.Fatalf("enable: %d %q %q", code, out, errOut)
+	}
+	settings := filepath.Join(dir, ".claude", "settings.json")
+	var got struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+			Ask   []string `json:"ask"`
+		} `json:"permissions"`
+	}
+	b, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Permissions.Allow, ",") != "mcp__notes__notes_list" || strings.Join(got.Permissions.Ask, ",") != "mcp__notes__notes_clear" {
+		t.Errorf("rules = %+v", got.Permissions)
+	}
+
+	code, out, _ = runCLI(t, dir, "config", "disable", "claude-code", "notes")
+	if code != 0 || !strings.Contains(out, "removed the tool rules for notes") {
+		t.Fatalf("disable: %d %q", code, out)
+	}
+	if b, _ := os.ReadFile(settings); strings.Contains(string(b), "mcp__notes__") || strings.Contains(string(b), "permissions") {
+		t.Errorf("rules left after disable:\n%s", b)
+	}
+}
+
 // A bare --bin is a name on PATH, as for serve.
 func TestConfig_serveServerBinOnPath(t *testing.T) {
 	goBin, err := exec.LookPath("go")
@@ -131,11 +177,14 @@ func TestRefuseBatchFile(t *testing.T) {
 func TestConfig_errors(t *testing.T) {
 	dir := t.TempDir()
 	for name, args := range map[string][]string{
-		"nothing":   {"config", "enable", "claude-code", "x"},
-		"both":      {"config", "enable", "claude-code", "x", "--command", "c", "--tools", "go.mod", "--bin", "go.mod"},
-		"bad scope": {"config", "enable", "claude-desktop", "x", "--command", "c", "--scope", "project"},
-		"client":    {"config", "list", "emacs"},
-		"env":       {"config", "enable", "claude-code", "x", "--command", "c", "--env", "NOEQUALS"},
+		"nothing":            {"config", "enable", "claude-code", "x"},
+		"both":               {"config", "enable", "claude-code", "x", "--command", "c", "--tools", "go.mod", "--bin", "go.mod"},
+		"bad scope":          {"config", "enable", "claude-desktop", "x", "--command", "c", "--scope", "project"},
+		"client":             {"config", "list", "emacs"},
+		"env":                {"config", "enable", "claude-code", "x", "--command", "c", "--env", "NOEQUALS"},
+		"tools with command": {"config", "enable", "claude-code", "x", "--command", "c", "--tools", "go.mod"},
+		"permissions client": {"config", "enable", "cursor", "x", "--command", "c", "--tools", "go.mod", "--permissions"},
+		"permissions tools":  {"config", "enable", "claude-code", "x", "--command", "c", "--permissions"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "go.mod"), nil, 0o600); err != nil {

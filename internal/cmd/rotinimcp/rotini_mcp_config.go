@@ -7,16 +7,17 @@ import (
 	"github.com/go-rotini/rotini"
 )
 
-var _ rotini.Handler = (*rotiniMcpConfigHandler)(nil)
+var _ rotini.HandlerE = (*rotiniMcpConfigHandler)(nil)
 
 type rotiniMcpConfigHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*rotiniMcpConfigHandler) Run(ctx context.Context, rtx *rotini.Context) {
+func (*rotiniMcpConfigHandler) Run(ctx context.Context, rtx *rotini.Context) error {
 	fmt.Fprintln(rtx.Stderr, rtx.Help())
 	rtx.HaltWithCode(1)
+	return nil
 }

@@ -7,29 +7,26 @@ import (
 	"github.com/go-rotini/rotini"
 )
 
-var _ rotini.Handler = (*rotiniMcpHelpHandler)(nil)
+var _ rotini.HandlerE = (*rotiniMcpHelpHandler)(nil)
 
 type rotiniMcpHelpHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*rotiniMcpHelpHandler) Run(ctx context.Context, rtx *rotini.Context) {
+func (*rotiniMcpHelpHandler) Run(ctx context.Context, rtx *rotini.Context) error {
 	inputs, err := rtx.Inputs[RotiniMcpHelpInputs]()
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 
-	page, err := Help(inputs.RotiniMcpHelp.Arguments.Command...)
+	page, err := rtx.HelpFor(inputs.RotiniMcpHelp.Arguments.Command...)
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 
-	if _, err := fmt.Fprintln(rtx.Stdout, page); err != nil {
-		rtx.HaltWith(err)
-	}
+	_, err = fmt.Fprintln(rtx.Stdout, page)
+	return err
 }

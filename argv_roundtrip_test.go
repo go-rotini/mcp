@@ -37,24 +37,24 @@ type roundTripInputs struct {
 
 type roundTripHandlers struct{ got *roundTripInputs }
 
-func (h roundTripHandlers) App() rotini.Handler { return roundTripRun{h: h} }
+func (h roundTripHandlers) App() rotini.HandlerE { return roundTripRun{h: h} }
 
 type roundTripRun struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 
 	h roundTripHandlers
 }
 
-func (r roundTripRun) Run(_ context.Context, rtx *rotini.Context) {
+func (r roundTripRun) Run(_ context.Context, rtx *rotini.Context) error {
 	in, err := rtx.Inputs[roundTripInputs]()
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	*r.h.got = in
+	return nil
 }
 
 // roundTripDef is the command the round-trip facts describe, as rotini parses it.

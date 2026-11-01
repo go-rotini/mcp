@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,25 @@ func TestParseTools_taskr(t *testing.T) {
 	}
 	if tools["taskr_list"].Invoke.Fixed[0] != "--format=json" {
 		t.Error("list lost its machine-output flag")
+	}
+}
+
+// Only the invocation facts are read from _meta: a command's metadata may use any key,
+// including the facts' own field names.
+func TestParseTools_otherMetaKeys(t *testing.T) {
+	doc := `{"tools":[{"name":"t","inputSchema":{"type":"object"},"_meta":{
+		"dev.rotini/invoke":{"path":["run"]},
+		"dev.rotini/metadata":{"path":"tasks","flags":"none","stream":"yes"}}}]}`
+	tools, err := ParseTools([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tools[0].Invoke.Path; len(got) != 1 || got[0] != "run" {
+		t.Errorf("path = %v", got)
+	}
+	doc = `{"tools":[{"name":"t","inputSchema":{"type":"object"},"_meta":{"dev.rotini/invoke":{"path":"run"}}}]}`
+	if _, err := ParseTools([]byte(doc)); err == nil || !strings.Contains(err.Error(), `_meta["dev.rotini/invoke"]`) {
+		t.Errorf("unreadable facts: %v", err)
 	}
 }
 
@@ -92,5 +112,25 @@ func TestErrorLine(t *testing.T) {
 		if got := errorLine([]byte("Error: before\n"+line+"\n")) != nil; got != want {
 			t.Errorf("%s: found = %v, want %v", line, got, want)
 		}
+	}
+}
+
+func TestReportLines(t *testing.T) {
+	stderr := "Error: before\n" +
+		`{"schema_version":1,"skipped":{"path":"a.bin"}}` + "\n" +
+		`{"schema_version":1,"error":{"message":"x"}}` + "\n" +
+		`{"schema_version":2,"warning":{"message":"newer"}}` + "\n" +
+		`{"error":{"message":"no version"}}` + "\n" +
+		`{"schema_version":1,"info":"not an object"}` + "\n" +
+		`{"schema_version":1,"a":{},"b":{}}` + "\n" +
+		`{"schema_version":1,"success":{"message":"done"}}` + "\n"
+	b, _ := json.Marshal(reportLines([]byte(stderr)))
+	want := `[{"schema_version":1,"skipped":{"path":"a.bin"}},{"error":{"message":"x"},"schema_version":1},{"schema_version":1,"success":{"message":"done"}}]`
+	if string(b) != want {
+		t.Errorf("got  %s\nwant %s", b, want)
+	}
+	// A declared channel's line before the error line doesn't hide it.
+	if line := errorLine([]byte(stderr)); line == nil || line["error"].(map[string]any)["message"] != "x" {
+		t.Errorf("error line = %v", line)
 	}
 }

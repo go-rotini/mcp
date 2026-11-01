@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"debug/buildinfo"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -58,6 +58,7 @@ type config struct {
 	serving        []string
 	logger         io.Writer
 	maxConcurrent  int
+	successStderr  SuccessStderr
 }
 
 // WithExecutable runs path for each call. By default it is the running program
@@ -100,8 +101,9 @@ func WithSelector(keep func(Tool) bool) Option {
 }
 
 // WithParameterSelector serves only the parameters keep returns true for: the others are left
-// out of the tool's input schema, and a call that passes one is refused, whatever the schema
-// says about extra properties. Leaving out a required parameter is an error.
+// out of the tool's input schema, along with its examples that set them, and a call that passes
+// one is refused, whatever the schema says about extra properties. Leaving out a required
+// parameter is an error.
 func WithParameterSelector(keep func(t Tool, param string) bool) Option {
 	return func(c *config) { c.params = keep }
 }
@@ -143,8 +145,9 @@ func WithRevision(rev string) Option {
 	return func(c *config) { c.revision = rev }
 }
 
-// WithImplementation names the server to clients. By default it is the executable's base name
-// and the main module's version.
+// WithImplementation names the server to clients. By default it is the base name and the main
+// module's version of the program the tools run (see [WithExecutable]), or "(devel)" when that
+// program carries no Go build information.
 func WithImplementation(name, version string) Option {
 	return func(c *config) { c.name, c.version = name, version }
 }
@@ -155,6 +158,26 @@ func WithImplementation(name, version string) Option {
 // with `agent: false`.
 func WithServingCommand(path ...string) Option {
 	return func(c *config) { c.serving = slices.Clone(path) }
+}
+
+// SuccessStderr is where a successful run's stderr goes in its result. Rotini's default reporter
+// writes a command's messages ("noted", warnings) to stderr, and clients show a result's content
+// but not its _meta.
+type SuccessStderr int
+
+const (
+	// SuccessStderrContent (the default) shows stderr: it is the result's text when stdout is
+	// empty and the tool declares no output, and a second text block otherwise. It is in _meta
+	// too.
+	SuccessStderrContent SuccessStderr = iota
+	// SuccessStderrMeta puts stderr only in _meta["dev.rotini/stderr"].
+	SuccessStderrMeta
+)
+
+// WithSuccessStderr sets where a successful run's stderr goes (default [SuccessStderrContent]).
+// A failed run's result text is always its stderr.
+func WithSuccessStderr(mode SuccessStderr) Option {
+	return func(c *config) { c.successStderr = mode }
 }
 
 // WithLog writes the server's log (bad tool names, protocol problems) to w. By default nothing
@@ -169,11 +192,8 @@ func WithLog(w io.Writer) Option {
 //
 // In a rotini program, a command can serve the program's own tools:
 //
-//	func (*mcpHandler) Run(ctx context.Context, rtx *rotini.Context) {
-//		err := mcp.Serve(ctx, []byte(ToolsMCP), mcp.WithStdio(rtx.Stdin, rtx.Stdout), mcp.WithServingCommand("mcp"))
-//		if err != nil {
-//			rtx.HaltWith(err)
-//		}
+//	func (*mcpHandler) Run(ctx context.Context, rtx *rotini.Context) error {
+//		return mcp.Serve(ctx, []byte(ToolsMCP), mcp.WithStdio(rtx.Stdin, rtx.Stdout), mcp.WithServingCommand("mcp"))
 //	}
 func Serve(ctx context.Context, tools []byte, opts ...Option) error {
 	s, cfg, err := newServer(tools, opts)
@@ -238,7 +258,7 @@ func newServer(doc []byte, opts []Option) (*sdk.Server, *config, error) {
 		name = strings.TrimSuffix(filepath.Base(exe), ".exe")
 	}
 	if version == "" {
-		version = moduleVersion()
+		version = executableVersion(exe)
 	}
 	sopts := &sdk.ServerOptions{Capabilities: &sdk.ServerCapabilities{}}
 	if cfg.logger != nil {
@@ -384,7 +404,31 @@ func selectParameters(t *Tool, keep func(Tool, string) bool) (map[string]bool, e
 		delete(props, name)
 		hidden[name] = true
 	}
+	dropExamples(t.input, hidden)
 	return hidden, nil
+}
+
+// dropExamples removes the input schema's examples that set a hidden parameter, since a call
+// like them would be refused.
+func dropExamples(input map[string]any, hidden map[string]bool) {
+	examples, ok := input["examples"].([]any)
+	if !ok || len(hidden) == 0 {
+		return
+	}
+	kept := slices.DeleteFunc(examples, func(e any) bool {
+		m, _ := e.(map[string]any)
+		for name := range m {
+			if hidden[name] {
+				return true
+			}
+		}
+		return false
+	})
+	if len(kept) == 0 {
+		delete(input, "examples")
+		return
+	}
+	input["examples"] = kept
 }
 
 // olderRevision reports whether a request follows an MCP revision before 2026-07-28. A
@@ -449,7 +493,7 @@ func (s *server) handler(newer, older *tool) sdk.ToolHandler {
 			if err != nil {
 				return nil, err
 			}
-			return t.result(r), nil
+			return t.result(r, s.cfg.successStderr), nil
 		})
 		for _, mw := range slices.Backward(s.cfg.middleware) {
 			run = mw(run)
@@ -503,8 +547,10 @@ func (s *server) handler(newer, older *tool) sdk.ToolHandler {
 }
 
 // moduleVersion is the main module's version, for the server's implementation version.
-func moduleVersion() string {
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+// executableVersion is the main module version recorded in the Go program at exe, or "(devel)"
+// when it records none or isn't a Go program.
+func executableVersion(exe string) string {
+	if info, err := buildinfo.ReadFile(exe); err == nil && info.Main.Version != "" {
 		return info.Main.Version
 	}
 	return "(devel)"

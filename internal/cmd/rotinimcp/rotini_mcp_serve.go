@@ -16,40 +16,35 @@ import (
 	"github.com/go-rotini/mcp"
 )
 
-var _ rotini.Handler = (*rotiniMcpServeHandler)(nil)
+var _ rotini.HandlerE = (*rotiniMcpServeHandler)(nil)
 
 type rotiniMcpServeHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*rotiniMcpServeHandler) Run(ctx context.Context, rtx *rotini.Context) {
+func (*rotiniMcpServeHandler) Run(ctx context.Context, rtx *rotini.Context) error {
 	inputs, err := rtx.Inputs[RotiniMcpServeInputs]()
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	f := inputs.RotiniMcpServe.Flags
 
 	doc, err := os.ReadFile(underDir(rtx.Dir(), f.Tools))
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	bin, err := program(rtx.Dir(), f.Bin)
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	if err := checkEnv(f.Env); err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	if err := knownTools(doc, f.Tool); err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 
 	opts := []mcp.Option{
@@ -62,14 +57,21 @@ func (*rotiniMcpServeHandler) Run(ctx context.Context, rtx *rotini.Context) {
 		mcp.WithOutputLimit(int64(f.OutputLimit)),
 		mcp.WithMaxConcurrent(f.Concurrency),
 		mcp.WithRevision(f.Revision),
+		mcp.WithSuccessStderr(successStderr(f.SuccessStderr)),
 		mcp.WithLog(rtx.Stderr),
 	}
 	if len(f.Tool) > 0 {
 		opts = append(opts, mcp.WithSelector(func(t mcp.Tool) bool { return slices.Contains(f.Tool, t.Name) }))
 	}
-	if err := mcp.Serve(ctx, doc, opts...); err != nil {
-		rtx.HaltWith(err)
+	return mcp.Serve(ctx, doc, opts...)
+}
+
+// successStderr is the mode a --success-stderr value names.
+func successStderr(v string) mcp.SuccessStderr {
+	if v == RotiniMcpServeSuccessStderrMeta {
+		return mcp.SuccessStderrMeta
 	}
+	return mcp.SuccessStderrContent
 }
 
 // underDir resolves a path typed relative to the run's directory.

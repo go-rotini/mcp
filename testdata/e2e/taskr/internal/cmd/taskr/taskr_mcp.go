@@ -7,21 +7,18 @@ import (
 	"github.com/go-rotini/rotini"
 )
 
-var _ rotini.Handler = (*taskrMcpHandler)(nil)
+var _ rotini.HandlerE = (*taskrMcpHandler)(nil)
 
 type taskrMcpHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*taskrMcpHandler) Run(ctx context.Context, rtx *rotini.Context) {
-	err := mcp.Serve(ctx, []byte(ToolsMCP),
+func (*taskrMcpHandler) Run(ctx context.Context, rtx *rotini.Context) error {
+	return mcp.Serve(ctx, []byte(ToolsMCP),
 		mcp.WithStdio(rtx.Stdin, rtx.Stdout),
 		mcp.WithEnv(rtx.Environ()),
 		mcp.WithServingCommand("mcp"))
-	if err != nil {
-		rtx.HaltWith(err)
-	}
 }

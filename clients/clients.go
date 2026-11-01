@@ -1,5 +1,6 @@
 // Package clients adds, removes and lists MCP servers in the configuration files of MCP
-// clients: Claude Desktop, Claude Code, Cursor and VS Code.
+// clients: Claude Desktop, Claude Code, Cursor and VS Code. For Claude Code it also sets the
+// permission rules for a server's tools ([SetPermissions]).
 //
 // A file is changed only when asked. Before an existing file is rewritten it is copied to
 // <file>.bak, replacing an earlier backup, so the backup is the file before the last change.
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/go-rotini/jsonc"
 )
@@ -205,6 +207,158 @@ func List(c Client, scope Scope, dirs Dirs) (path string, servers map[string]Ser
 		}
 	}
 	return path, servers, nil
+}
+
+// Permissions are a server's tool rules in Claude Code's settings: the tools it runs without
+// asking, and the tools it always asks before running. Tool names are as served, such as
+// notes_list.
+type Permissions struct {
+	Allow, Ask []string
+}
+
+// ErrPermissions is a client this package writes no permission rules for.
+var ErrPermissions = errors.New("clients: permission rules are written for claude-code only")
+
+// SettingsPath is the file a client's permission rules go in: for Claude Code, the project's
+// .claude/settings.json.
+func (c Client) SettingsPath(dirs Dirs) (string, error) {
+	if c != ClaudeCode {
+		return "", fmt.Errorf("%w, not %s", ErrPermissions, c)
+	}
+	dirs, err := dirs.resolve()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dirs.Project, ".claude", "settings.json"), nil
+}
+
+// SetPermissions writes the rules for the server called name into the client's settings
+// (see [Client.SettingsPath]), creating the file if it doesn't exist. Rules are Claude Code's
+// tool names, mcp__<name>__<tool>; every allow and ask rule already there for the server (by
+// that prefix) is replaced, and every other setting and rule is kept.
+func SetPermissions(c Client, dirs Dirs, name string, p Permissions) (path string, err error) {
+	if name == "" {
+		return "", errors.New("clients: permission rules need a server name")
+	}
+	path, err = c.SettingsPath(dirs)
+	if err != nil {
+		return "", err
+	}
+	doc, exists, err := read(path)
+	if err != nil {
+		return "", err
+	}
+	perms, err := permissionsOf(doc, path)
+	if err != nil {
+		return "", err
+	}
+	prefix := toolPrefix(name)
+	for _, key := range []string{"allow", "ask"} {
+		rules, err := rulesOf(perms, key, path)
+		if err != nil {
+			return "", err
+		}
+		rules = slices.DeleteFunc(rules, func(r any) bool { return isRuleFor(r, prefix) })
+		tools := p.Allow
+		if key == "ask" {
+			tools = p.Ask
+		}
+		for _, tool := range tools {
+			rules = append(rules, prefix+tool)
+		}
+		if len(rules) > 0 {
+			perms.set(key, rules)
+		} else {
+			perms.delete(key)
+		}
+	}
+	doc.set("permissions", perms)
+	return path, write(path, doc, exists)
+}
+
+// ClearPermissions removes every allow and ask rule for the server called name from the
+// client's settings, and the permissions object when that leaves it empty. It reports whether
+// there were any; a missing file has none.
+func ClearPermissions(c Client, dirs Dirs, name string) (path string, removed bool, err error) {
+	path, err = c.SettingsPath(dirs)
+	if err != nil {
+		return "", false, err
+	}
+	doc, exists, err := read(path)
+	if err != nil || !exists {
+		return path, false, err
+	}
+	perms, err := permissionsOf(doc, path)
+	if err != nil {
+		return "", false, err
+	}
+	prefix := toolPrefix(name)
+	for _, key := range []string{"allow", "ask"} {
+		rules, err := rulesOf(perms, key, path)
+		if err != nil {
+			return "", false, err
+		}
+		kept := slices.DeleteFunc(slices.Clone(rules), func(r any) bool { return isRuleFor(r, prefix) })
+		if len(kept) == len(rules) {
+			continue
+		}
+		removed = true
+		if len(kept) > 0 {
+			perms.set(key, kept)
+		} else {
+			perms.delete(key)
+		}
+	}
+	if !removed {
+		return path, false, nil
+	}
+	if len(perms.keys) > 0 {
+		doc.set("permissions", perms)
+	} else {
+		doc.delete("permissions")
+	}
+	return path, true, write(path, doc, exists)
+}
+
+// toolPrefix is how Claude Code names a server's tools: mcp__<server>__, with each character
+// other than a letter, digit, _ or - written as _.
+func toolPrefix(server string) string {
+	name := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, server)
+	return "mcp__" + name + "__"
+}
+
+func isRuleFor(rule any, prefix string) bool {
+	s, ok := rule.(string)
+	return ok && strings.HasPrefix(s, prefix)
+}
+
+func permissionsOf(doc *object, path string) (*object, error) {
+	v := doc.get("permissions")
+	if v == nil {
+		return newObject(), nil
+	}
+	perms, ok := v.(*object)
+	if !ok {
+		return nil, fmt.Errorf(`clients: %s: "permissions" isn't an object`, path)
+	}
+	return perms, nil
+}
+
+func rulesOf(perms *object, key, path string) ([]any, error) {
+	v := perms.get(key)
+	if v == nil {
+		return nil, nil
+	}
+	rules, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf(`clients: %s: "permissions.%s" isn't a list`, path, key)
+	}
+	return rules, nil
 }
 
 func (d Dirs) resolve() (Dirs, error) {

@@ -92,6 +92,11 @@
       "_meta": {"dev.rotini/invoke": {"path": ["plain"]}}
     },
     {
+      "name": "fake_quiet",
+      "inputSchema": {"type": "object", "additionalProperties": false},
+      "_meta": {"dev.rotini/invoke": {"path": ["quiet"]}}
+    },
+    {
       "name": "fake_secret",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"key": {"type": "string"}}},
       "_meta": {"dev.rotini/invoke": {"path": ["echo"], "flags": {"key": {"flag": "--key", "kind": "scalar", "type": "string", "secret": true}}}}

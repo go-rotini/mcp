@@ -50,7 +50,7 @@ func TestExecute_callDeadlineIsATimeout(t *testing.T) {
 	if !r.timedOut || r.serverTimeout {
 		t.Fatalf("timedOut %v, serverTimeout %v", r.timedOut, r.serverTimeout)
 	}
-	res := (&tool{}).result(r)
+	res := (&tool{}).result(r, SuccessStderrContent)
 	if txt := text(res); !strings.Contains(txt, "ran past the call's deadline") || !strings.Contains(txt, "partial") {
 		t.Errorf("result text %q", txt)
 	}
