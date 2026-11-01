@@ -1,9 +1,18 @@
-version: 1.4.0
+version: 1.11.0
 command:
   name: taskr
   summary: keep a list of tasks
   env_prefix: TASKR
   response_files: { prefix: "+" }
+  channels:
+    - name: skipped
+      class: info
+      summary: a task left alone
+      schema:
+        type: object
+        required: [title]
+        properties:
+          title: { type: string }
   flags:
     - name: verbose
       summary: say more
@@ -20,6 +29,10 @@ command:
     - name: add
       summary: add a task
       effects: { kind: write }
+      metadata: { owner: core, path: tasks }
+      examples:
+        - run: taskr add "buy milk" --tag home --priority high
+          summary: add an urgent task
       arguments:
         - name: title
           summary: what to do

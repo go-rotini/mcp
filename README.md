@@ -19,8 +19,9 @@ command line and run as a child process; what the program prints becomes the res
   for a literal `@` on a parameter that reads `@file`
 - Arguments validated against the input schema (JSON Schema 2020-12) before anything runs;
   output checked against the output schema
-- Structured results: stdout as `structuredContent` (an array for a streaming command), and a
-  `StructuredReporter` error line on stderr with an error result
+- Structured results: stdout as `structuredContent` (an array for a streaming command), a
+  `StructuredReporter` error line on stderr with an error result, and every reporter line in
+  `_meta`
 - Safe runs: secrets refused on the command line, the server's stdin never passed on, SIGTERM
   on cancel or timeout so the program's signal handling runs, capped output
 - MCP revision 2026-07-28, with 2025-11-25 for older clients
@@ -36,7 +37,7 @@ go install github.com/go-rotini/mcp/cmd/rotini-mcp@latest   # the command
 go get github.com/go-rotini/mcp                             # the library
 ```
 
-Requires Go 1.27 or later and rotini v1.5.0 or later.
+Requires Go 1.27 or later and rotini v1.11.0 or later.
 
 ## Writing the tools file
 
@@ -52,7 +53,9 @@ generate:
 
 Declare what each command does (`effects`), which flag selects JSON output
 (`role: machine-output`), and keep commands and inputs from agents with `agent: false`. See
-rotini's guide, "Agent-ready CLIs".
+rotini's guide, "Agent-ready CLIs". A command's `examples` reach clients as its input schema's
+`examples`, and its `metadata` as `_meta["dev.rotini/metadata"]`, both as written; the parameter
+selector drops an example that sets a parameter it leaves out.
 
 ## Serving with rotini-mcp
 
@@ -71,6 +74,7 @@ rotini-mcp serve --tools tools/mcp.json --bin ./taskr
 | `--output-limit` | `10Mi` | the most a call may write on each of stdout and stderr |
 | `--concurrency` | `0` (none) | run at most this many calls at once; more wait their turn |
 | `--revision` | `2026-07-28` | the MCP revision to serve for (`2025-11-25` for older clients) |
+| `--success-stderr` | `content` | where a successful call's stderr goes: `content` shows it, `meta` keeps it in `_meta` only |
 
 Add it to a client:
 
@@ -91,6 +95,18 @@ the file it links to is rewritten.
 secrets out of them. The entry names the `rotini-mcp` executable that wrote it, so run an
 installed one, not one from `go run`.
 
+For Claude Code, `--permissions` also writes rules for the server's tools into the project's
+`.claude/settings.json`, from the tools' annotations: read-only tools run without asking
+(`permissions.allow`), destructive tools always ask (`permissions.ask`), and the rest are left
+to the client. The rules are Claude Code's tool names, `mcp__<server>__<tool>`; enabling again
+replaces the ones for that server, every other rule is kept, and `config disable` removes them.
+With `--command`, give `--tools` too, for the annotations:
+
+```bash
+rotini-mcp config enable claude-code taskr --tools tools/mcp.json --bin ./taskr --permissions
+rotini-mcp config enable claude-code taskr --command taskr --arg mcp --tools tools/mcp.json --permissions
+```
+
 ## Serving from the program itself
 
 Declare a command for it, kept from agents so it isn't a tool:
@@ -102,17 +118,15 @@ commands:
     agent: false
 ```
 
-and serve the generated `ToolsMCP` from its handler:
+and serve the generated `ToolsMCP` from its handler (an error-returning handler, which
+`hook_returns: error` on the conf's cmd package seeds):
 
 ```go
-func (*taskrMcpHandler) Run(ctx context.Context, rtx *rotini.Context) {
-	err := mcp.Serve(ctx, []byte(ToolsMCP),
+func (*taskrMcpHandler) Run(ctx context.Context, rtx *rotini.Context) error {
+	return mcp.Serve(ctx, []byte(ToolsMCP),
 		mcp.WithStdio(rtx.Stdin, rtx.Stdout),
 		mcp.WithEnv(rtx.Environ()),
 		mcp.WithServingCommand("mcp"))
-	if err != nil {
-		rtx.HaltWith(err)
-	}
 }
 ```
 
@@ -137,10 +151,17 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
   and its text; text after it (such as the default reporter's messages) goes in the result's
   `_meta["dev.rotini/trailing_stdout"]`. Use rotini's `StructuredReporter` so stdout holds only
   the output. Without an output schema, stdout is the text.
+- **A success's messages** (stderr, and text after a JSON output) are shown, since clients
+  don't show `_meta`: they are the text when stdout is empty and the tool declares no output,
+  and a second text block otherwise. They are in `_meta["dev.rotini/stderr"]` too.
+  `WithSuccessStderr(SuccessStderrMeta)` (`--success-stderr meta`) keeps them in `_meta` only.
 - **A non-zero exit** is an error result: its text is stderr, and a `StructuredReporter` error
   line on stderr is its structured content. A tool with an output schema puts the error line in
   `_meta["dev.rotini/error"]` instead, since clients check structured content against the output
   schema even on an error result. `_meta["dev.rotini/exit_code"]` has the exit code.
+- **Every `StructuredReporter` line** on stderr (errors, warnings, infos, successes and the
+  records of channels the spec declares, such as `{"schema_version":1,"skipped":{…}}`) is in the
+  result's `_meta["dev.rotini/records"]`, in order, on success and on error.
 - **A canceled call**, one past the timeout or its context's deadline (a middleware may set one),
   or one past the output limit sends SIGTERM to the program and every process it started (they
   share a process group), and kills them after the grace period, or once they have all exited
@@ -173,6 +194,7 @@ transport, so the handler must write nothing else to stdout. Rotini's signal han
 | `WithSelector(fn)` / `WithParameterSelector(fn)` | serve only some tools or parameters |
 | `WithMiddleware(mw...)` | wrap each call, with its command line built, for logging or policy |
 | `WithRevision(rev)` | `Revision20260728` (default) or `Revision20251125` |
+| `WithSuccessStderr(mode)` | show a success's stderr (`SuccessStderrContent`, default) or keep it in `_meta` (`SuccessStderrMeta`) |
 | `WithServingCommand(path...)` | refuse a tool that would run the serving command |
 | `WithImplementation(name, version)` / `WithLog(w)` | the server's name; its log |
 

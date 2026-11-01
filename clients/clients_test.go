@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -273,4 +274,88 @@ func TestEnableKeepsEntrySettingsAndOrder(t *testing.T) {
 		}
 		last = i
 	}
+}
+
+func TestPermissions(t *testing.T) {
+	d := testDirs(t)
+	path, err := ClaudeCode.SettingsPath(d)
+	if err != nil || path != filepath.Join(d.Project, ".claude", "settings.json") {
+		t.Fatalf("settings path %q, %v", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The author's own rules, another server's, and an older rule for this one.
+	existing := `{
+  // kept
+  "model": "x",
+  "permissions": {
+    "allow": ["Bash(go test:*)", "mcp__other__read", "mcp__notes__old"],
+    "deny": ["mcp__notes__danger"]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := SetPermissions(ClaudeCode, d, "notes", Permissions{Allow: []string{"notes_list"}, Ask: []string{"notes_clear"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := readSettings(t, path)
+	if got.Model != "x" {
+		t.Errorf("model = %q, want it kept", got.Model)
+	}
+	if want := []string{"Bash(go test:*)", "mcp__other__read", "mcp__notes__notes_list"}; !slices.Equal(got.Permissions.Allow, want) {
+		t.Errorf("allow = %q, want %q", got.Permissions.Allow, want)
+	}
+	if want := []string{"mcp__notes__notes_clear"}; !slices.Equal(got.Permissions.Ask, want) {
+		t.Errorf("ask = %q, want %q", got.Permissions.Ask, want)
+	}
+	if want := []string{"mcp__notes__danger"}; !slices.Equal(got.Permissions.Deny, want) {
+		t.Errorf("deny = %q, want the author's deny rule kept", got.Permissions.Deny)
+	}
+	if _, err := os.Stat(path + ".bak"); err != nil {
+		t.Errorf("no backup: %v", err)
+	}
+
+	_, removed, err := ClearPermissions(ClaudeCode, d, "notes")
+	if err != nil || !removed {
+		t.Fatalf("clear: removed %v, %v", removed, err)
+	}
+	got = readSettings(t, path)
+	if want := []string{"Bash(go test:*)", "mcp__other__read"}; !slices.Equal(got.Permissions.Allow, want) || got.Permissions.Ask != nil {
+		t.Errorf("after clear: allow %q, ask %q", got.Permissions.Allow, got.Permissions.Ask)
+	}
+	if _, removed, err := ClearPermissions(ClaudeCode, d, "notes"); err != nil || removed {
+		t.Errorf("a second clear: removed %v, %v", removed, err)
+	}
+
+	if _, err := SetPermissions(Cursor, d, "notes", Permissions{}); !errors.Is(err, ErrPermissions) {
+		t.Errorf("cursor: %v, want ErrPermissions", err)
+	}
+	if got := toolPrefix("my.server"); got != "mcp__my_server__" {
+		t.Errorf("prefix = %q", got)
+	}
+}
+
+type settings struct {
+	Model       string `json:"model"`
+	Permissions struct {
+		Allow []string `json:"allow"`
+		Ask   []string `json:"ask"`
+		Deny  []string `json:"deny"`
+	} `json:"permissions"`
+}
+
+func readSettings(t *testing.T, path string) settings {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s settings
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatalf("%s: %v\n%s", path, err, b)
+	}
+	return s
 }

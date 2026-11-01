@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"bufio"
+	"cmp"
 	"context"
+	"debug/buildinfo"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +74,8 @@ func fakeMain(args []string) int {
 		}
 	case "badout":
 		fmt.Println(`{"ok":"yes"}`)
+	case "quiet":
+		fmt.Fprintln(os.Stderr, "noted")
 	case "plain":
 		fmt.Println("hello")
 		fmt.Fprintln(os.Stderr, "a warning")
@@ -170,6 +174,17 @@ func call(t *testing.T, cs *sdk.ClientSession, name string, args any) *sdk.CallT
 	return res
 }
 
+// blocks is each text block of a result's content.
+func blocks(res *sdk.CallToolResult) []string {
+	var parts []string
+	for _, c := range res.Content {
+		if tc, ok := c.(*sdk.TextContent); ok {
+			parts = append(parts, tc.Text)
+		}
+	}
+	return parts
+}
+
 func text(res *sdk.CallToolResult) string {
 	var parts []string
 	for _, c := range res.Content {
@@ -203,7 +218,7 @@ func TestServer_listTools(t *testing.T) {
 	for _, tl := range list.Tools {
 		names = append(names, tl.Name)
 	}
-	want := []string{"fake_array", "fake_badout", "fake_echo", "fake_fail", "fake_fail_typed", "fake_flood", "fake_orphan", "fake_plain", "fake_secret", "fake_sleep", "fake_stream"}
+	want := []string{"fake_array", "fake_badout", "fake_echo", "fake_fail", "fake_fail_typed", "fake_flood", "fake_orphan", "fake_plain", "fake_quiet", "fake_secret", "fake_sleep", "fake_stream"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v (sorted by name)", names, want)
 	}
@@ -242,8 +257,11 @@ func TestServer_echoArgv(t *testing.T) {
 		t.Errorf("trailing stdout = %v, want done", res.Meta[metaTrailing])
 	}
 	var back map[string]any
-	if err := json.Unmarshal([]byte(text(res)), &back); err != nil {
+	if err := json.Unmarshal([]byte(blocks(res)[0]), &back); err != nil {
 		t.Errorf("text isn't the structured content's JSON: %v", err)
+	}
+	if got := blocks(res); len(got) != 2 || got[1] != "done" {
+		t.Errorf("blocks = %q, want the JSON then the trailing message", got)
 	}
 }
 
@@ -333,6 +351,9 @@ func TestServer_failure(t *testing.T) {
 	if fmt.Sprint(res.Meta[metaExitCode]) != "3" {
 		t.Errorf("exit code = %v", res.Meta[metaExitCode])
 	}
+	if records, _ := res.Meta[metaRecords].([]any); len(records) != 1 {
+		t.Errorf("records = %v, want the error line", res.Meta[metaRecords])
+	}
 }
 
 // With an output schema, the error line goes in _meta: clients check structured content against
@@ -382,11 +403,35 @@ func TestServer_outputMismatch(t *testing.T) {
 func TestServer_plain(t *testing.T) {
 	cs := connect(t, fakeDoc(t))
 	res := call(t, cs, "fake_plain", nil)
-	if res.IsError || text(res) != "hello\n" || res.StructuredContent != nil {
-		t.Fatalf("got %+v %q", res.IsError, text(res))
+	if res.IsError || !slices.Equal(blocks(res), []string{"hello\n", "a warning"}) || res.StructuredContent != nil {
+		t.Fatalf("got %+v %q", res.IsError, blocks(res))
 	}
 	if res.Meta[metaStderr] != "a warning" {
 		t.Errorf("stderr = %v", res.Meta[metaStderr])
+	}
+}
+
+// A run that only reports (the default reporter's "noted" on stderr) shows that as its text:
+// clients don't show _meta, so it would otherwise read as a run that did nothing.
+func TestServer_successStderr(t *testing.T) {
+	cs := connect(t, fakeDoc(t))
+	res := call(t, cs, "fake_quiet", nil)
+	if res.IsError || !slices.Equal(blocks(res), []string{"noted"}) {
+		t.Fatalf("got %+v %q, want the reporter's message as the text", res.IsError, blocks(res))
+	}
+
+	cs = connect(t, fakeDoc(t), WithSuccessStderr(SuccessStderrMeta))
+	res = call(t, cs, "fake_quiet", nil)
+	if !slices.Equal(blocks(res), []string{""}) || res.Meta[metaStderr] != "noted" {
+		t.Errorf("meta only: blocks %q, stderr %v", blocks(res), res.Meta[metaStderr])
+	}
+	res = call(t, cs, "fake_plain", nil)
+	if !slices.Equal(blocks(res), []string{"hello\n"}) {
+		t.Errorf("meta only: blocks %q", blocks(res))
+	}
+	res = call(t, cs, "fake_echo", nil)
+	if len(blocks(res)) != 1 {
+		t.Errorf("meta only, with output: blocks %q", blocks(res))
 	}
 }
 
@@ -503,6 +548,68 @@ func TestServer_selectors(t *testing.T) {
 	}
 }
 
+// tools/list serves a tool's examples and every _meta key as the tools document has them, and
+// each example is a call its input schema accepts. The parameter selector drops the examples
+// that set a left-out parameter.
+func TestServer_examplesAndMeta(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("testdata", "taskr.mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := func(t *testing.T, opts ...Option) *sdk.Tool {
+		t.Helper()
+		list, err := connect(t, doc, opts...).ListTools(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tl := range list.Tools {
+			if tl.Name == "taskr_add" {
+				return tl
+			}
+		}
+		t.Fatal("no taskr_add")
+		return nil
+	}
+	add := served(t)
+	if md, _ := add.Meta["dev.rotini/metadata"].(map[string]any); md["owner"] != "core-team" {
+		t.Errorf("_meta = %v", add.Meta)
+	}
+	if _, ok := add.Meta[MetaKey]; !ok {
+		t.Errorf("_meta lost %s: %v", MetaKey, add.Meta)
+	}
+	b, _ := json.Marshal(add.InputSchema)
+	var in map[string]any
+	if err := json.Unmarshal(b, &in); err != nil {
+		t.Fatal(err)
+	}
+	examples, _ := in["examples"].([]any)
+	if len(examples) == 0 {
+		t.Fatalf("no examples served: %s", b)
+	}
+	s := mustCompileSchema(t, in)
+	for _, ex := range examples {
+		eb, _ := json.Marshal(ex)
+		if msg := validationMessage(s, eb); msg != "" {
+			t.Errorf("example %s doesn't match the input schema: %s", eb, msg)
+		}
+	}
+
+	add = served(t, WithParameterSelector(func(_ Tool, p string) bool { return p != "tag" }))
+	b, _ = json.Marshal(add.InputSchema)
+	if strings.Contains(string(b), `"examples"`) {
+		t.Errorf("an example setting a left-out parameter is still served: %s", b)
+	}
+}
+
+func mustCompileSchema(t *testing.T, schema map[string]any) *jsonschema.Schema {
+	t.Helper()
+	s, err := compile("t", "input", schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestServer_middleware(t *testing.T) {
 	var seen []string
 	mw := func(next Handler) Handler {
@@ -548,6 +655,34 @@ func TestNewServer_errors(t *testing.T) {
 	}
 }
 
+// The default version is the served program's, not the server's: rotini-mcp serving another
+// binary must not report its own version under that binary's name.
+func TestExecutableVersion(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := buildinfo.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := cmp.Or(info.Main.Version, "(devel)")
+	if got := executableVersion(exe); got != want {
+		t.Errorf("a Go program: version = %q, want %q", got, want)
+	}
+
+	script := filepath.Join(t.TempDir(), "prog")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := executableVersion(script); got != "(devel)" {
+		t.Errorf("not a Go program: version = %q, want (devel)", got)
+	}
+	if got := executableVersion(filepath.Join(t.TempDir(), "missing")); got != "(devel)" {
+		t.Errorf("a missing file: version = %q, want (devel)", got)
+	}
+}
+
 func TestServe_stdio(t *testing.T) {
 	exe, _ := os.Executable()
 	cr, sw := io.Pipe()
@@ -567,7 +702,7 @@ func TestServe_stdio(t *testing.T) {
 		t.Errorf("server name = %q", got)
 	}
 	res := call(t, cs, "fake_plain", nil)
-	if text(res) != "hello\n" {
+	if blocks(res)[0] != "hello\n" {
 		t.Errorf("text = %q", text(res))
 	}
 	cancel()

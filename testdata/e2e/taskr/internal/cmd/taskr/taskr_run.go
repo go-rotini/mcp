@@ -7,24 +7,21 @@ import (
 	"github.com/go-rotini/rotini"
 )
 
-var _ rotini.Handler = (*taskrRunHandler)(nil)
+var _ rotini.HandlerE = (*taskrRunHandler)(nil)
 
 type taskrRunHandler struct {
-	rotini.NoCascadingPreRun
-	rotini.NoPreRun
-	rotini.NoPostRun
-	rotini.NoCascadingPostRun
+	rotini.NoCascadingPreRunE
+	rotini.NoPreRunE
+	rotini.NoPostRunE
+	rotini.NoCascadingPostRunE
 }
 
-func (*taskrRunHandler) Run(ctx context.Context, rtx *rotini.Context) {
+func (*taskrRunHandler) Run(ctx context.Context, rtx *rotini.Context) error {
 	in, err := rtx.Inputs[TaskrRunInputs]()
 	if err != nil {
-		rtx.HaltWith(err)
-		return
+		return err
 	}
 	a := in.TaskrRun.Arguments
 	out := map[string]any{"script": a.Script, "args": append([]string{}, a.Args...)}
-	if err := json.NewEncoder(rtx.Stdout).Encode(out); err != nil {
-		rtx.HaltWith(err)
-	}
+	return json.NewEncoder(rtx.Stdout).Encode(out)
 }

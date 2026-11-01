@@ -1,4 +1,4 @@
-version: 1.5.0
+version: 1.11.0
 generate:
   packages:
     - type: main
@@ -7,6 +7,7 @@ generate:
     - type: cmd
       file: internal/cmd/rotinimcp/zz_rotini.go
       package: rotinimcp
+      hook_returns: error
   features:
     - type: help
       enabled: true

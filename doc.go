@@ -32,8 +32,17 @@
 // A zero exit is a success. When the tool declares output, stdout is its structured content
 // (for a stream, one JSON value per line, as an array), checked against the output schema;
 // text after the value, such as the default reporter's messages, goes in the result's _meta.
-// Use rotini's StructuredReporter so stdout holds only the output. A non-zero exit is an
-// error result whose text is stderr (stdout when stderr is empty); a StructuredReporter error line on stderr becomes its
-// structured content, or, for a tool with an output schema (which clients check structured
-// content against, even on an error result), its _meta["dev.rotini/error"].
+// Use rotini's StructuredReporter so stdout holds only the output. A success's messages
+// (stderr, and that trailing text) are also shown, since clients don't show _meta: as the text
+// when stdout is empty and the tool declares no output, and as a second text block otherwise;
+// [WithSuccessStderr] keeps them in _meta only. A non-zero exit is an
+// error result whose text is stderr (stdout when stderr is empty); a StructuredReporter error
+// line on stderr becomes its structured content, or, for a tool with an output schema (which
+// clients check structured content against, even on an error result), its
+// _meta["dev.rotini/error"]. On success and on error, every StructuredReporter line on stderr,
+// the records of channels the spec declares among them, is in the result's
+// _meta["dev.rotini/records"], in order.
+//
+// A tool is served as the document defines it: a command's examples are its input schema's
+// examples, and its metadata is its _meta["dev.rotini/metadata"].
 package mcp

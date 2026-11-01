@@ -1,4 +1,4 @@
-version: 1.5.0
+version: 1.11.0
 command:
   name: rotini-mcp
   summary: serve a rotini program's tools over MCP
@@ -66,6 +66,10 @@ command:
           summary: the MCP revision to serve the tools for
           identifiers: [--revision]
           schema: { type: string, enum: ['2026-07-28', '2025-11-25'], default: '2026-07-28' }
+        - name: success_stderr
+          summary: "where a successful call's stderr goes: content (shown, and in _meta) or meta (only in _meta)"
+          identifiers: [--success-stderr]
+          schema: { type: string, enum: [content, meta], default: content }
     - name: config
       summary: add, remove or list servers in an MCP client's configuration
       description: >-
@@ -84,9 +88,16 @@ command:
             them. A --command or --bin path is written as an absolute path. A server already in the
             file keeps its other settings. The file is backed up to <file>.bak, and comments in it
             are not kept.
+
+            For claude-code, --permissions also writes rules for the server's tools into the
+            project's .claude/settings.json, from the tools file's annotations: read-only tools run
+            without asking, destructive tools always ask, and the rest are left to the client. It
+            replaces the rules an earlier --permissions wrote for this server and keeps every other
+            rule. With --command, give --tools too, for the annotations.
           examples:
             - rotini-mcp config enable claude-desktop taskr --tools tools/mcp.json --bin ./taskr
             - rotini-mcp config enable cursor taskr --command taskr --arg mcp
+            - rotini-mcp config enable claude-code taskr --tools tools/mcp.json --bin ./taskr --permissions
           arguments:
             - name: client
               summary: the client
@@ -119,11 +130,16 @@ command:
               summary: the user's file or the project's (by default the client's first)
               identifiers: [--scope]
               schema: { type: string, enum: [user, project] }
+            - name: permissions
+              summary: "claude-code: also allow the read-only tools and ask before the destructive ones"
+              identifiers: [--permissions]
+              schema: { type: bool }
         - name: disable
           summary: remove a server from a client's configuration
           description: >-
             Remove a server from a client's configuration. The file is backed up to <file>.bak,
-            and comments in it are not kept.
+            and comments in it are not kept. For claude-code, the server's tool rules in the
+            project's .claude/settings.json go too.
           arguments:
             - name: client
               summary: the client
