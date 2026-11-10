@@ -9,7 +9,7 @@ require (
 	github.com/go-rotini/jsonschema v1.2.5
 	github.com/go-rotini/rotini v1.14.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
